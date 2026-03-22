@@ -1,0 +1,27 @@
+{
+  "id": "Vigil",
+  "name": "Vigil",
+  "author": "Meltingplot GmbH",
+  "version": "1.0.0",
+  "license": "LGPL-3.0-or-later",
+  "homepage": "https://github.com/Meltingplot/dwc-vigil",
+  "dwcVersion": "auto-major",
+  "sbcRequired": true,
+  "sbcDsfVersion": "auto-major",
+  "sbcExecutable": "vigil-daemon.py",
+  "sbcOutputRedirected": true,
+  "sbcPermissions": [
+    "commandExecution",
+    "objectModelReadWrite",
+    "registerHttpEndpoints",
+    "fileSystemAccess"
+  ],
+  "sbcPythonDependencies": ["dsf-python"],
+  "data": {
+    "status": "idle",
+    "machineHours": 0,
+    "printHours": 0,
+    "jobsTotal": 0,
+    "lastSaved": ""
+  }
+}

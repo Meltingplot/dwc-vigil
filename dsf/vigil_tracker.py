@@ -1,0 +1,443 @@
+"""
+Vigil Tracker — Data model and tracking logic for three counter tiers.
+
+Tracks: machine hours, print hours, jobs, axis travel, filament usage, heater time.
+Three tiers: lifetime (never reset), service (individually resettable), session (in-memory).
+"""
+
+import copy
+import logging
+from datetime import date
+
+from vigil_persistence import (
+    empty_state,
+    _empty_counters,
+    atomic_save,
+    append_daily_snapshot,
+    get_data_path,
+)
+from vigil_time import MonotonicTimer, DayTracker, utc_now_iso, today_iso
+
+logger = logging.getLogger("vigil.tracker")
+
+
+class VigilTracker:
+    """Tracks machine statistics across three counter tiers."""
+
+    def __init__(self, data: dict | None = None):
+        self._data = data if data is not None else empty_state()
+        self._session = _empty_counters()
+        self._dirty = False
+        self._timer = MonotonicTimer()
+        self._day_tracker = DayTracker()
+
+        # Previous values for delta calculations
+        self._prev_axis_pos = {}      # axis_name → position
+        self._prev_extruder_pos = {}  # extruder_index → position
+        self._prev_status = None
+        self._prev_job_file = None
+
+        # Day baseline for history snapshots (lifetime values at start of day)
+        self._day_baseline = copy.deepcopy(self._data["lifetime"])
+
+        # Check for date gap at startup (close previous day)
+        self._handle_startup_gap()
+
+    def _handle_startup_gap(self):
+        """If last_saved is from a previous day, that day's snapshot is already final."""
+        last_saved = self._data.get("last_saved", "")
+        gap_date = self._day_tracker.detect_gap(last_saved)
+        if gap_date is not None:
+            logger.info("Date gap detected since %s — starting fresh baseline", gap_date)
+            # The previous day's data was saved at shutdown, so the snapshot
+            # should already have been written. Reset baseline for today.
+            self._day_baseline = copy.deepcopy(self._data["lifetime"])
+
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
+    def clear_dirty(self):
+        self._dirty = False
+
+    @property
+    def data(self) -> dict:
+        return self._data
+
+    @property
+    def session(self) -> dict:
+        return self._session
+
+    # --- Update from Object Model ---
+
+    def update(self, model: dict):
+        """
+        Process an Object Model update (PATCH or full).
+        Called on each SubscribeConnection update (~250ms).
+        """
+        dt = self._timer.tick()
+        if dt <= 0:
+            return
+
+        status = _get_nested(model, "state", "status")
+        if status is not None:
+            self._update_time_counters(status, dt)
+            self._update_job_tracking(status, model)
+            self._prev_status = status
+
+        self._update_axis_travel(model)
+        self._update_extruder_travel(model)
+        self._update_heaters(model, dt)
+
+        # Check day change
+        self._check_day_change()
+
+    def _update_time_counters(self, status: str, dt: float):
+        """Update machine and print time counters."""
+        if status != "off":
+            self._add("machine_seconds", dt)
+
+        if status == "processing":
+            self._add("print_seconds", dt)
+
+    def _update_job_tracking(self, status: str, model: dict):
+        """Track job start/end transitions."""
+        job_file = _get_nested(model, "job", "file", "fileName")
+
+        # Job start: fileName transitions from None to value
+        if job_file is not None and self._prev_job_file is None:
+            self._add("jobs_total", 1)
+            self._dirty = True
+
+        # Job end: status transitions from processing to idle/cancelled
+        if self._prev_status == "processing" and status != "processing":
+            if status == "idle":
+                self._add("jobs_successful", 1)
+            else:
+                # pausing, cancelling, etc. → count as cancelled
+                self._add("jobs_cancelled", 1)
+            self._dirty = True
+
+        self._prev_job_file = job_file
+
+    def _update_axis_travel(self, model: dict):
+        """Track axis travel distances."""
+        axes = _get_nested(model, "move", "axes")
+        if not isinstance(axes, list):
+            return
+
+        for axis in axes:
+            if not isinstance(axis, dict):
+                continue
+            letter = axis.get("letter")
+            pos = axis.get("machinePosition")
+            if letter is None or pos is None:
+                continue
+
+            if letter in self._prev_axis_pos:
+                delta = abs(pos - self._prev_axis_pos[letter])
+                if delta > 0 and delta < 100000:  # Sanity check: < 100m per tick
+                    self._add_keyed("axes", letter, delta)
+
+            self._prev_axis_pos[letter] = pos
+
+    def _update_extruder_travel(self, model: dict):
+        """Track extruder travel and net filament usage."""
+        extruders = _get_nested(model, "move", "extruders")
+        if not isinstance(extruders, list):
+            return
+
+        for i, ext in enumerate(extruders):
+            if not isinstance(ext, dict):
+                continue
+            pos = ext.get("position")
+            if pos is None:
+                continue
+
+            key = f"E{i}"
+            if i in self._prev_extruder_pos:
+                raw_delta = pos - self._prev_extruder_pos[i]
+                abs_delta = abs(raw_delta)
+
+                if abs_delta > 0 and abs_delta < 10000:  # Sanity: < 10m per tick
+                    # Total extruder travel (abs, includes retracts)
+                    self._add_keyed("axes", key, abs_delta)
+
+                    # Net filament (positive extrusion only)
+                    if raw_delta > 0:
+                        self._add_keyed("filament_mm", key, raw_delta)
+
+            self._prev_extruder_pos[i] = pos
+
+    def _update_heaters(self, model: dict, dt: float):
+        """Track heater on-time and full-load time."""
+        heaters = _get_nested(model, "heat", "heaters")
+        if not isinstance(heaters, list):
+            return
+
+        for i, heater in enumerate(heaters):
+            if not isinstance(heater, dict):
+                continue
+            state = heater.get("state")
+            key = str(i)
+
+            if state is not None and state != "off":
+                self._add_heater(key, "on_seconds", dt)
+
+                # Full load: check current PWM value
+                current = heater.get("current")
+                if current is not None and current >= 0.95:
+                    self._add_heater(key, "full_load_seconds", dt)
+
+    # --- Counter helpers ---
+
+    def _add(self, counter: str, value):
+        """Add to a scalar counter across all three tiers."""
+        self._data["lifetime"][counter] += value
+        self._data["service"][counter] += value
+        self._session[counter] += value
+        self._dirty = True
+
+    def _add_keyed(self, category: str, key: str, value: float):
+        """Add to a keyed counter (axes, filament_mm) across all three tiers."""
+        for tier in [self._data["lifetime"], self._data["service"], self._session]:
+            if key not in tier[category]:
+                tier[category][key] = 0.0
+            tier[category][key] += value
+        self._dirty = True
+
+    def _add_heater(self, key: str, field: str, value: float):
+        """Add to a heater counter across all three tiers."""
+        for tier in [self._data["lifetime"], self._data["service"], self._session]:
+            if key not in tier["heaters"]:
+                tier["heaters"][key] = {"on_seconds": 0.0, "full_load_seconds": 0.0}
+            tier["heaters"][key][field] += value
+        self._dirty = True
+
+    # --- Service Reset ---
+
+    def service_reset(self, scope: str, keys: list | None = None,
+                      description: str = "", component: str | None = None) -> dict:
+        """
+        Reset service counters for a given scope.
+        Returns values before reset for the service log.
+        """
+        service = self._data["service"]
+        values_before = {}
+
+        if scope == "machine_time":
+            values_before["machine_seconds"] = service["machine_seconds"]
+            service["machine_seconds"] = 0.0
+
+        elif scope == "print_time":
+            values_before["print_seconds"] = service["print_seconds"]
+            service["print_seconds"] = 0.0
+
+        elif scope == "jobs":
+            for k in ["jobs_total", "jobs_successful", "jobs_cancelled"]:
+                values_before[k] = service[k]
+                service[k] = 0
+
+        elif scope == "axes":
+            target_keys = keys if keys else list(service["axes"].keys())
+            for k in target_keys:
+                if k in service["axes"]:
+                    values_before[k] = service["axes"][k]
+                    service["axes"][k] = 0.0
+
+        elif scope == "extruders":
+            target_keys = keys if keys else [k for k in service["axes"] if k.startswith("E")]
+            for k in target_keys:
+                if k in service["axes"]:
+                    values_before[k] = service["axes"][k]
+                    service["axes"][k] = 0.0
+
+        elif scope == "filament":
+            target_keys = keys if keys else list(service["filament_mm"].keys())
+            for k in target_keys:
+                if k in service["filament_mm"]:
+                    values_before[k] = service["filament_mm"][k]
+                    service["filament_mm"][k] = 0.0
+
+        elif scope == "heaters":
+            target_keys = keys if keys else list(service["heaters"].keys())
+            for k in target_keys:
+                if k in service["heaters"]:
+                    values_before[k] = copy.deepcopy(service["heaters"][k])
+                    service["heaters"][k] = {"on_seconds": 0.0, "full_load_seconds": 0.0}
+
+        else:
+            raise ValueError(f"Unknown reset scope: {scope}")
+
+        # Log the reset
+        log_entry = {
+            "timestamp": utc_now_iso(),
+            "type": "counter_reset",
+            "component": component,
+            "description": description,
+            "reset_scope": scope,
+            "reset_keys": keys,
+            "values_before_reset": values_before,
+        }
+        self._data["service_log"].append(log_entry)
+        self._dirty = True
+
+        return values_before
+
+    def add_service_event(self, component: str, description: str):
+        """Log a service event (no counter reset)."""
+        log_entry = {
+            "timestamp": utc_now_iso(),
+            "type": "service_event",
+            "component": component,
+            "description": description,
+            "reset_scope": None,
+            "reset_keys": None,
+            "values_before_reset": None,
+        }
+        self._data["service_log"].append(log_entry)
+        self._dirty = True
+
+    # --- History Snapshots ---
+
+    def _check_day_change(self):
+        """Check for day change and create snapshot if needed."""
+        previous_date = self._day_tracker.check_day_change()
+        if previous_date is not None:
+            self._create_daily_snapshot(previous_date)
+            self._day_baseline = copy.deepcopy(self._data["lifetime"])
+
+    def create_shutdown_snapshot(self):
+        """Create a snapshot for the current day at shutdown."""
+        self._create_daily_snapshot(self._day_tracker.current_date)
+
+    def _create_daily_snapshot(self, snapshot_date: date):
+        """Create a daily snapshot from the delta between now and day baseline."""
+        lt = self._data["lifetime"]
+        bl = self._day_baseline
+
+        snapshot = {
+            "date": snapshot_date.isoformat(),
+            "machine_hours": round((lt["machine_seconds"] - bl["machine_seconds"]) / 3600, 2),
+            "print_hours": round((lt["print_seconds"] - bl["print_seconds"]) / 3600, 2),
+            "jobs_total": lt["jobs_total"] - bl["jobs_total"],
+            "jobs_successful": lt["jobs_successful"] - bl["jobs_successful"],
+            "jobs_cancelled": lt["jobs_cancelled"] - bl["jobs_cancelled"],
+        }
+
+        # Axis travel delta
+        axis_travel = {}
+        for axis, val in lt["axes"].items():
+            baseline_val = bl["axes"].get(axis, 0.0)
+            delta = val - baseline_val
+            if delta > 0:
+                axis_travel[axis] = round(delta, 1)
+        if axis_travel:
+            snapshot["axis_travel_mm"] = axis_travel
+
+        # Filament delta
+        filament = {}
+        for ext, val in lt["filament_mm"].items():
+            baseline_val = bl["filament_mm"].get(ext, 0.0)
+            delta = val - baseline_val
+            if delta > 0:
+                filament[ext] = round(delta, 1)
+        if filament:
+            snapshot["filament_mm"] = filament
+
+        # Heater on-hours delta
+        heater_hours = {}
+        for h, vals in lt["heaters"].items():
+            baseline_h = bl["heaters"].get(h, {})
+            delta = vals.get("on_seconds", 0) - baseline_h.get("on_seconds", 0)
+            if delta > 0:
+                heater_hours[h] = round(delta / 3600, 2)
+        if heater_hours:
+            snapshot["heater_on_hours"] = heater_hours
+
+        try:
+            append_daily_snapshot(snapshot)
+            logger.info("Daily snapshot created for %s", snapshot_date)
+        except Exception as e:
+            logger.error("Failed to save daily snapshot: %s", e)
+
+    # --- Status for API / Plugin Data ---
+
+    def get_status(self) -> dict:
+        """Return all three counter tiers for the API."""
+        return {
+            "lifetime": self._data["lifetime"],
+            "service": self._data["service"],
+            "session": self._session,
+        }
+
+    def get_plugin_data_summary(self) -> dict:
+        """Return a compact summary for the DSF Object Model plugin data."""
+        lt = self._data["lifetime"]
+        return {
+            "status": "tracking",
+            "machineHours": round(lt["machine_seconds"] / 3600, 2),
+            "printHours": round(lt["print_seconds"] / 3600, 2),
+            "jobsTotal": lt["jobs_total"],
+            "lastSaved": self._data.get("last_saved", ""),
+        }
+
+    def get_service_log(self) -> list:
+        """Return the service log (newest first)."""
+        return list(reversed(self._data["service_log"]))
+
+    def save(self):
+        """Persist data to disk."""
+        atomic_save(self._data)
+        self.clear_dirty()
+
+    # --- Export ---
+
+    def export_json(self) -> dict:
+        """Return full data for JSON export."""
+        return {
+            "schema_version": self._data.get("schema_version", 1),
+            "exported_at": utc_now_iso(),
+            "lifetime": self._data["lifetime"],
+            "service": self._data["service"],
+            "session": self._session,
+            "service_log": self._data["service_log"],
+        }
+
+    def export_csv(self) -> str:
+        """Return data as CSV string for export."""
+        lines = ["tier,counter,key,value"]
+
+        for tier_name, tier_data in [("lifetime", self._data["lifetime"]),
+                                      ("service", self._data["service"]),
+                                      ("session", self._session)]:
+            # Scalar counters
+            for key in ["machine_seconds", "print_seconds", "jobs_total",
+                        "jobs_successful", "jobs_cancelled"]:
+                lines.append(f"{tier_name},{key},,{tier_data.get(key, 0)}")
+
+            # Axes
+            for axis, val in tier_data.get("axes", {}).items():
+                lines.append(f"{tier_name},axis_travel_mm,{axis},{val}")
+
+            # Filament
+            for ext, val in tier_data.get("filament_mm", {}).items():
+                lines.append(f"{tier_name},filament_mm,{ext},{val}")
+
+            # Heaters
+            for h, vals in tier_data.get("heaters", {}).items():
+                lines.append(f"{tier_name},heater_on_seconds,{h},{vals.get('on_seconds', 0)}")
+                lines.append(f"{tier_name},heater_full_load_seconds,{h},{vals.get('full_load_seconds', 0)}")
+
+        return "\n".join(lines) + "\n"
+
+
+# --- Helpers ---
+
+def _get_nested(d: dict, *keys):
+    """Safely get a nested value from a dict."""
+    for key in keys:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(key)
+    return d
