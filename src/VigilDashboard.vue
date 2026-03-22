@@ -180,16 +180,16 @@ export default {
         this.loadStatus()
         this.pollTimer = setInterval(() => this.loadStatus(), POLL_INTERVAL)
     },
-    beforeDestroy() {
-        if (this.pollTimer) clearInterval(this.pollTimer)
-    },
     watch: {
-        activeTab(newTab) {
+        activeTab() {
             // Lazy-load history when first switching away from lifetime tab
             if (!this.historyLoaded) {
                 this.loadHistory()
             }
         }
+    },
+    beforeDestroy() {
+        if (this.pollTimer) clearInterval(this.pollTimer)
     },
     methods: {
         // --- API helpers ---
