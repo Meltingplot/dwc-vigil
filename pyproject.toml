@@ -1,0 +1,17 @@
+[project]
+name = "dwc-vigil"
+version = "1.0.0"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["dsf"]
+
+[tool.coverage.run]
+source = ["dsf"]
+
+[tool.coverage.report]
+show_missing = true
