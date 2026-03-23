@@ -249,9 +249,8 @@ def main():
     update_plugin_data(cmd, tracker)
 
     # SubscribeConnection for Object Model updates
-    sub = SubscribeConnection()
-    sub.connect()
-    sub.subscribe(SubscriptionMode.PATCH, _subscribe_filter())
+    sub = SubscribeConnection(SubscriptionMode.PATCH)
+    sub.connect(filter=_subscribe_filter())
 
     logger.info("Vigil daemon started — tracking active")
 
