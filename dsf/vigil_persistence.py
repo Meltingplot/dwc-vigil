@@ -58,12 +58,31 @@ def _empty_counters():
     return {
         "machine_seconds": 0.0,
         "print_seconds": 0.0,
+        "pause_seconds": 0.0,
+        "warmup_seconds": 0.0,
         "jobs_total": 0,
         "jobs_successful": 0,
         "jobs_cancelled": 0,
         "axes": {},
         "filament_mm": {},
         "heaters": {},
+        "fans": {},
+    }
+
+
+def _empty_vitals():
+    """Return a fresh set of board/SBC vitals (min/max tracking per day)."""
+    return {
+        "mcu_temp_min": None,
+        "mcu_temp_max": None,
+        "vin_min": None,
+        "vin_max": None,
+        "v12_min": None,
+        "v12_max": None,
+        "sbc_cpu_temp_max": None,
+        "sbc_cpu_load_avg_sum": 0.0,
+        "sbc_cpu_load_avg_count": 0,
+        "sbc_memory_min_bytes": None,
     }
 
 
@@ -75,6 +94,14 @@ def empty_state():
         "lifetime": _empty_counters(),
         "service": _empty_counters(),
         "service_log": [],
+        "vitals": _empty_vitals(),
+        "uptime": {
+            "firmware_uptime_secs": None,
+            "sbc_uptime_secs": None,
+            "firmware_reboots": 0,
+            "sbc_reboots": 0,
+        },
+        "volume_free_bytes": None,
     }
 
 
