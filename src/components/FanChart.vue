@@ -1,10 +1,10 @@
 <template>
   <v-card outlined>
-    <v-card-title class="text-subtitle-1">Jobs</v-card-title>
+    <v-card-title class="text-subtitle-1">Fan Usage</v-card-title>
     <v-card-text>
       <canvas ref="chart" height="200" />
       <div v-if="!hasData" class="text-center grey--text py-8">
-        No job data yet
+        No fan data yet
       </div>
     </v-card-text>
   </v-card>
@@ -12,20 +12,21 @@
 
 <script>
 export default {
-    name: 'JobsPieChart',
+    name: 'FanChart',
     props: {
-        successful: { type: Number, default: 0 },
-        cancelled: { type: Number, default: 0 },
+        fans: { type: Object, default: () => ({}) },
     },
     data() {
         return { chartInstance: null }
     },
     computed: {
-        hasData() { return this.successful > 0 || this.cancelled > 0 }
+        hasData() { return Object.keys(this.fans).length > 0 }
     },
     watch: {
-        successful() { this.renderChart() },
-        cancelled() { this.renderChart() },
+        fans: {
+            deep: true,
+            handler() { this.renderChart() }
+        }
     },
     mounted() {
         this.loadChartJs()
@@ -36,11 +37,9 @@ export default {
     methods: {
         async loadChartJs() {
             if (typeof window.Chart === 'undefined') {
-                // Chart.js is bundled with the plugin
                 try {
                     await import('chart.js/auto')
                 } catch {
-                    // Chart.js not available
                     return
                 }
             }
@@ -49,27 +48,39 @@ export default {
         renderChart() {
             if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
 
+            const labels = Object.keys(this.fans).map(k => `Fan ${k}`)
+            const onHours = Object.values(this.fans).map(f => (f.on_seconds || 0) / 3600)
+
             // Update in-place to avoid animation replay on poll
             if (this.chartInstance) {
-                this.chartInstance.data.datasets[0].data = [this.successful, this.cancelled]
-                this.chartInstance.update('none')
-                return
+                const currentLabels = this.chartInstance.data.labels
+                if (currentLabels.length === labels.length && currentLabels.every((l, i) => l === labels[i])) {
+                    this.chartInstance.data.datasets[0].data = onHours
+                    this.chartInstance.update('none')
+                    return
+                }
+                this.chartInstance.destroy()
             }
 
             this.chartInstance = new window.Chart(this.$refs.chart, {
-                type: 'doughnut',
+                type: 'bar',
                 data: {
-                    labels: ['Successful', 'Cancelled'],
+                    labels,
                     datasets: [{
-                        data: [this.successful, this.cancelled],
-                        backgroundColor: ['#4CAF50', '#F44336'],
+                        label: 'On Time (h)',
+                        data: onHours,
+                        backgroundColor: '#009688',
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    indexAxis: 'y',
                     plugins: {
                         legend: { position: 'bottom' }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: 'Hours' } }
                     }
                 }
             })

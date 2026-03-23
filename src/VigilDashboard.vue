@@ -7,7 +7,7 @@
       <!-- Row 1: Key metrics -->
       <v-col cols="12">
         <v-row>
-          <v-col v-for="card in statCards" :key="card.label" cols="12" sm="6" md>
+          <v-col v-for="card in statCards" :key="card.label" cols="6" sm="4" md>
             <stat-card
               :label="card.label"
               :value="card.value"
@@ -28,7 +28,7 @@
         <heater-chart :heaters="currentTier.heaters || {}" />
       </v-col>
 
-      <!-- Row 3: Details -->
+      <!-- Row 3: Axis + Fan -->
       <v-col cols="12" md="5">
         <axis-table
           :axes="currentTier.axes || {}"
@@ -36,13 +36,27 @@
         />
       </v-col>
       <v-col cols="12" md="7">
+        <fan-chart :fans="currentTier.fans || {}" />
+      </v-col>
+
+      <!-- Row 4: System vitals -->
+      <v-col cols="12">
+        <vitals-card
+          :vitals="statusData.vitals || {}"
+          :uptime="statusData.uptime || {}"
+          :volume-free-bytes="statusData.volume_free_bytes"
+        />
+      </v-col>
+
+      <!-- Row 5: History -->
+      <v-col cols="12">
         <history-chart
           :days="historyDays"
           :loading="loadingHistory"
         />
       </v-col>
 
-      <!-- Row 4: Actions -->
+      <!-- Row 6: Actions -->
       <v-col cols="12">
         <div class="d-flex flex-wrap align-center" style="gap: 8px">
           <export-button :loading="exporting" @export="handleExport" />
@@ -108,7 +122,9 @@ import CounterTabs from './components/CounterTabs.vue'
 import StatCard from './components/StatCard.vue'
 import JobsPieChart from './components/JobsPieChart.vue'
 import HeaterChart from './components/HeaterChart.vue'
+import FanChart from './components/FanChart.vue'
 import AxisTable from './components/AxisTable.vue'
+import VitalsCard from './components/VitalsCard.vue'
 import HistoryChart from './components/HistoryChart.vue'
 import ExportButton from './components/ExportButton.vue'
 import ServiceResetDialog from './components/ServiceResetDialog.vue'
@@ -122,8 +138,8 @@ const API_BASE = '/machine/Vigil'
 export default {
     name: 'VigilDashboard',
     components: {
-        CounterTabs, StatCard, JobsPieChart, HeaterChart,
-        AxisTable, HistoryChart, ExportButton,
+        CounterTabs, StatCard, JobsPieChart, HeaterChart, FanChart,
+        AxisTable, VitalsCard, HistoryChart, ExportButton,
         ServiceResetDialog, ServiceEventDialog, ServiceLogDialog,
     },
     data() {
@@ -170,15 +186,13 @@ export default {
             return [
                 { label: 'Machine Hours', value: t.machine_seconds || 0, type: 'time' },
                 { label: 'Print Hours', value: t.print_seconds || 0, type: 'time' },
+                { label: 'Pause Time', value: t.pause_seconds || 0, type: 'time' },
+                { label: 'Warmup Time', value: t.warmup_seconds || 0, type: 'time' },
                 { label: 'Jobs Total', value: t.jobs_total || 0, type: 'number' },
                 { label: 'Successful', value: t.jobs_successful || 0, type: 'number' },
                 { label: 'Cancelled', value: t.jobs_cancelled || 0, type: 'number' },
             ]
         },
-    },
-    mounted() {
-        this.loadStatus()
-        this.pollTimer = setInterval(() => this.loadStatus(), POLL_INTERVAL)
     },
     watch: {
         activeTab() {
@@ -187,6 +201,10 @@ export default {
                 this.loadHistory()
             }
         }
+    },
+    mounted() {
+        this.loadStatus()
+        this.pollTimer = setInterval(() => this.loadStatus(), POLL_INTERVAL)
     },
     beforeDestroy() {
         if (this.pollTimer) clearInterval(this.pollTimer)

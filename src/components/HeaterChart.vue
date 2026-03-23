@@ -48,11 +48,21 @@ export default {
         renderChart() {
             if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
 
-            if (this.chartInstance) this.chartInstance.destroy()
-
             const labels = Object.keys(this.heaters).map(k => `Heater ${k}`)
             const onHours = Object.values(this.heaters).map(h => (h.on_seconds || 0) / 3600)
             const fullLoadHours = Object.values(this.heaters).map(h => (h.full_load_seconds || 0) / 3600)
+
+            // Update in-place if labels haven't changed to avoid animation replay
+            if (this.chartInstance) {
+                const currentLabels = this.chartInstance.data.labels
+                if (currentLabels.length === labels.length && currentLabels.every((l, i) => l === labels[i])) {
+                    this.chartInstance.data.datasets[0].data = onHours
+                    this.chartInstance.data.datasets[1].data = fullLoadHours
+                    this.chartInstance.update('none')
+                    return
+                }
+                this.chartInstance.destroy()
+            }
 
             this.chartInstance = new window.Chart(this.$refs.chart, {
                 type: 'bar',
