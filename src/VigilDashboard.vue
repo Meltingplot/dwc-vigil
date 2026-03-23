@@ -3,7 +3,7 @@
     <!-- Counter tier tabs -->
     <counter-tabs v-model="activeTab" />
 
-    <v-row v-show="statusData" class="mt-2">
+    <v-row v-if="statusData" class="mt-2">
       <!-- Row 1: Key metrics -->
       <v-col cols="12">
         <v-row>
@@ -81,7 +81,7 @@
     </v-row>
 
     <!-- Loading state -->
-    <div v-if="!statusData" class="text-center py-12">
+    <div v-else class="text-center py-12">
       <v-progress-circular indeterminate size="48" />
       <div class="mt-4 grey--text">Loading Vigil data...</div>
     </div>
@@ -235,15 +235,7 @@ export default {
         // --- Data loading ---
         async loadStatus() {
             try {
-                const newData = await this.apiGet('status')
-                if (!this.statusData) {
-                    // First load — assign the whole object
-                    this.statusData = newData
-                } else {
-                    // Subsequent polls — patch in-place to avoid full reactivity cascade.
-                    // Only tier/key values that actually changed trigger component updates.
-                    this._patchObject(this.statusData, newData)
-                }
+                this.statusData = await this.apiGet('status')
                 // Load history on first successful status
                 if (!this.historyLoaded) {
                     this.loadHistory()
@@ -327,25 +319,6 @@ export default {
         },
 
         // --- Helpers ---
-        _patchObject(target, source) {
-            // Deep-patch: recursively update only changed values in-place.
-            // Preserves object references for unchanged subtrees so Vue
-            // watchers/computed properties don't fire unnecessarily.
-            for (const key of Object.keys(source)) {
-                const oldVal = target[key]
-                const newVal = source[key]
-                if (oldVal === newVal) continue
-                if (
-                    oldVal && newVal &&
-                    typeof oldVal === 'object' && typeof newVal === 'object' &&
-                    !Array.isArray(oldVal) && !Array.isArray(newVal)
-                ) {
-                    this._patchObject(oldVal, newVal)
-                } else if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
-                    this.$set(target, key, newVal)
-                }
-            }
-        },
         downloadBlob(blob, filename) {
             const url = URL.createObjectURL(blob)
             const a = document.createElement('a')

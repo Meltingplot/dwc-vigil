@@ -24,7 +24,7 @@
       />
     </v-card-title>
     <v-card-text>
-      <canvas ref="chart" height="200" />
+      <Bar v-if="hasData" :data="barData" :options="chartOptions" />
       <div v-if="loading" class="text-center py-8">
         <v-progress-circular indeterminate size="32" />
       </div>
@@ -36,12 +36,18 @@
 </template>
 
 <script>
+import { Bar } from 'vue-chartjs'
+import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
+
+ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
+
 const DICT_METRICS = new Set([
     'heater_on_hours', 'fan_on_hours', 'axis_travel_mm', 'filament_mm',
 ])
 
 export default {
     name: 'HistoryChart',
+    components: { Bar },
     props: {
         days: { type: Array, default: () => [] },
         loading: { type: Boolean, default: false },
@@ -81,8 +87,6 @@ export default {
                 { text: 'SBC Reboots', value: 'sbc_reboots' },
                 { text: 'Disk Free (MB)', value: 'volume_free_mb' },
             ],
-            chartInstance: null,
-            lastDaysJson: '',
         }
     },
     computed: {
@@ -107,7 +111,7 @@ export default {
             }
             return label
         },
-        chartData() {
+        chartValues() {
             return this.days.map(d => {
                 if (this.isDictMetric) {
                     const dict = d[this.metric]
@@ -119,88 +123,46 @@ export default {
                 return d[this.metric] || 0
             })
         },
+        barData() {
+            return {
+                labels: this.days.map(d => d.date),
+                datasets: [{
+                    label: this.metricLabel,
+                    data: this.chartValues,
+                    backgroundColor: '#1976D2',
+                }]
+            }
+        },
+        chartOptions() {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: {
+                        ticks: {
+                            maxRotation: 45,
+                            maxTicksLimit: 15,
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: this.metricLabel }
+                    }
+                }
+            }
+        }
     },
     watch: {
-        days() {
-            const json = JSON.stringify(this.days)
-            if (json === this.lastDaysJson) return
-            this.lastDaysJson = json
-            this.renderChart()
-        },
         metric() {
             // Auto-select first subKey for dict metrics
             if (this.isDictMetric && this.subKeys.length > 0 && !this.subKeys.includes(this.subKey)) {
                 this.subKey = this.subKeys[0]
             }
-            this.renderChart()
         },
-        subKey() { this.renderChart() },
     },
-    mounted() {
-        this.loadChartJs()
-    },
-    beforeDestroy() {
-        if (this.chartInstance) this.chartInstance.destroy()
-    },
-    methods: {
-        async loadChartJs() {
-            if (typeof window.Chart === 'undefined') {
-                try {
-                    await import('chart.js/auto')
-                } catch {
-                    return
-                }
-            }
-            this.renderChart()
-        },
-        renderChart() {
-            if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
-
-            const labels = this.days.map(d => d.date)
-            const data = this.chartData
-            const label = this.metricLabel
-
-            // Update in-place to avoid animation replay on poll
-            if (this.chartInstance) {
-                this.chartInstance.data.labels = labels
-                this.chartInstance.data.datasets[0].data = data
-                this.chartInstance.data.datasets[0].label = label
-                this.chartInstance.options.scales.y.title.text = label
-                this.chartInstance.update('none')
-                return
-            }
-
-            this.chartInstance = new window.Chart(this.$refs.chart, {
-                type: 'bar',
-                data: {
-                    labels,
-                    datasets: [{
-                        label,
-                        data,
-                        backgroundColor: '#1976D2',
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false }
-                    },
-                    scales: {
-                        x: {
-                            ticks: {
-                                maxRotation: 45,
-                                maxTicksLimit: 15,
-                            }
-                        },
-                        y: {
-                            beginAtZero: true,
-                            title: { display: true, text: label }
-                        }
-                    }
-                }
-            })
-        }
-    }
 }
 </script>

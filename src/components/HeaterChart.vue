@@ -2,8 +2,8 @@
   <v-card outlined>
     <v-card-title class="text-subtitle-1">Heater Usage</v-card-title>
     <v-card-text>
-      <canvas ref="chart" height="200" />
-      <div v-if="!hasData" class="text-center grey--text py-8">
+      <Bar v-if="hasData" :data="chartData" :options="chartOptions" />
+      <div v-else class="text-center grey--text py-8">
         No heater data yet
       </div>
     </v-card-text>
@@ -11,94 +11,50 @@
 </template>
 
 <script>
+import { Bar } from 'vue-chartjs'
+import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
+
+ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
+
 export default {
     name: 'HeaterChart',
+    components: { Bar },
     props: {
         heaters: { type: Object, default: () => ({}) },
     },
-    data() {
-        return { chartInstance: null, lastDataJson: '' }
-    },
     computed: {
-        hasData() { return Object.keys(this.heaters).length > 0 }
-    },
-    watch: {
-        heaters: {
-            deep: true,
-            handler() {
-                const json = JSON.stringify(this.heaters)
-                if (json === this.lastDataJson) return
-                this.renderChart()
-            }
-        }
-    },
-    mounted() {
-        this.loadChartJs()
-    },
-    beforeDestroy() {
-        if (this.chartInstance) this.chartInstance.destroy()
-    },
-    methods: {
-        async loadChartJs() {
-            if (typeof window.Chart === 'undefined') {
-                try {
-                    await import('chart.js/auto')
-                } catch {
-                    return
-                }
-            }
-            this.renderChart()
-        },
-        renderChart() {
-            if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
-
+        hasData() { return Object.keys(this.heaters).length > 0 },
+        chartData() {
             const labels = Object.keys(this.heaters).map(k => `Heater ${k}`)
-            const onHours = Object.values(this.heaters).map(h => (h.on_seconds || 0) / 3600)
-            const fullLoadHours = Object.values(this.heaters).map(h => (h.full_load_seconds || 0) / 3600)
-
-            // Update in-place if labels haven't changed to avoid animation replay
-            if (this.chartInstance) {
-                const currentLabels = this.chartInstance.data.labels
-                if (currentLabels.length === labels.length && currentLabels.every((l, i) => l === labels[i])) {
-                    this.chartInstance.data.datasets[0].data = onHours
-                    this.chartInstance.data.datasets[1].data = fullLoadHours
-                    this.chartInstance.update('none')
-                    this.lastDataJson = JSON.stringify(this.heaters)
-                    return
-                }
-                this.chartInstance.destroy()
-            }
-
-            this.chartInstance = new window.Chart(this.$refs.chart, {
-                type: 'bar',
-                data: {
-                    labels,
-                    datasets: [
-                        {
-                            label: 'On Time (h)',
-                            data: onHours,
-                            backgroundColor: '#2196F3',
-                        },
-                        {
-                            label: 'Full Load (h)',
-                            data: fullLoadHours,
-                            backgroundColor: '#FF9800',
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    indexAxis: 'y',
-                    plugins: {
-                        legend: { position: 'bottom' }
+            return {
+                labels,
+                datasets: [
+                    {
+                        label: 'On Time (h)',
+                        data: Object.values(this.heaters).map(h => (h.on_seconds || 0) / 3600),
+                        backgroundColor: '#2196F3',
                     },
-                    scales: {
-                        x: { title: { display: true, text: 'Hours' } }
+                    {
+                        label: 'Full Load (h)',
+                        data: Object.values(this.heaters).map(h => (h.full_load_seconds || 0) / 3600),
+                        backgroundColor: '#FF9800',
                     }
+                ]
+            }
+        },
+        chartOptions() {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: 'y',
+                animation: false,
+                plugins: {
+                    legend: { position: 'bottom' }
+                },
+                scales: {
+                    x: { title: { display: true, text: 'Hours' } }
                 }
-            })
-            this.lastDataJson = JSON.stringify(this.heaters)
+            }
         }
     }
 }
