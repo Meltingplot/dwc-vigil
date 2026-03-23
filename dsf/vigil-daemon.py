@@ -60,6 +60,28 @@ try:
 except ImportError:
     pass
 
+# Monkey-patch dsf-python: Axis.letter crashes on invalid values (e.g. '\x00'
+# from uninitialized axes when the plugin loads before firmware configures them)
+try:
+    from dsf.object_model.move.axis import Axis as _Axis, AxisLetter as _AxisLetter
+
+    def _safe_letter_setter(self, value):
+        try:
+            if value is None:
+                self._letter = _AxisLetter.none
+            elif isinstance(value, _AxisLetter):
+                self._letter = value
+            elif isinstance(value, str):
+                self._letter = _AxisLetter(value)
+            else:
+                self._letter = _AxisLetter.none
+        except (ValueError, KeyError):
+            self._letter = _AxisLetter.none
+
+    _Axis.letter = _Axis.letter.setter(_safe_letter_setter)
+except ImportError:
+    pass
+
 from dsf.connections import CommandConnection, SubscribeConnection, SubscriptionMode
 from dsf.object_model import HttpEndpointType
 from dsf.http import HttpEndpointConnection, HttpResponseType
