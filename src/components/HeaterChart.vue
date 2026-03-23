@@ -17,7 +17,7 @@ export default {
         heaters: { type: Object, default: () => ({}) },
     },
     data() {
-        return { chartInstance: null }
+        return { chartInstance: null, lastDataJson: '' }
     },
     computed: {
         hasData() { return Object.keys(this.heaters).length > 0 }
@@ -25,7 +25,11 @@ export default {
     watch: {
         heaters: {
             deep: true,
-            handler() { this.renderChart() }
+            handler() {
+                const json = JSON.stringify(this.heaters)
+                if (json === this.lastDataJson) return
+                this.renderChart()
+            }
         }
     },
     mounted() {
@@ -59,6 +63,7 @@ export default {
                     this.chartInstance.data.datasets[0].data = onHours
                     this.chartInstance.data.datasets[1].data = fullLoadHours
                     this.chartInstance.update('none')
+                    this.lastDataJson = JSON.stringify(this.heaters)
                     return
                 }
                 this.chartInstance.destroy()
@@ -93,6 +98,7 @@ export default {
                     }
                 }
             })
+            this.lastDataJson = JSON.stringify(this.heaters)
         }
     }
 }
