@@ -156,11 +156,6 @@ def register_endpoints(cmd, tracker):
     return registered
 
 
-def _object_model_to_dict(model) -> dict:
-    """Convert a dsf-python ObjectModel to a plain dict via its JSON serialisation."""
-    return json.loads(model.to_json())
-
-
 def main():
     global _tracker, _shutdown
 
@@ -193,7 +188,7 @@ def main():
 
     # First call: receive the complete object model
     object_model = sub.get_object_model()
-    tracker.update(_object_model_to_dict(object_model))
+    tracker.update(object_model)
 
     logger.info("Vigil daemon started — tracking active")
 
@@ -207,7 +202,7 @@ def main():
                 # acts as a loop heartbeat for periodic saves and shutdown checks.
                 patch = sub.get_object_model_patch()
                 object_model.update_from_json(patch)
-                tracker.update(_object_model_to_dict(object_model))
+                tracker.update(object_model)
             except TimeoutError:
                 pass
             except Exception as e:
