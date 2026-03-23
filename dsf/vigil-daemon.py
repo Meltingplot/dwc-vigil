@@ -249,7 +249,10 @@ def main():
     update_plugin_data(cmd, tracker)
 
     # SubscribeConnection for Object Model updates
+    # timeout=0 makes receive_json() block indefinitely; in PATCH mode DSF only
+    # sends data when the model actually changes, which can exceed the 3s default.
     sub = SubscribeConnection(SubscriptionMode.PATCH, filter_str=_subscribe_filter())
+    sub.timeout = 0
     sub.connect()
 
     # First call must be get_object_model() to receive the full initial model
