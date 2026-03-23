@@ -80,11 +80,14 @@ export default {
             scopes: [
                 { text: 'Machine Time', value: 'machine_time' },
                 { text: 'Print Time', value: 'print_time' },
+                { text: 'Pause Time', value: 'pause_time' },
+                { text: 'Warmup Time', value: 'warmup_time' },
                 { text: 'Jobs', value: 'jobs' },
                 { text: 'Axes', value: 'axes' },
                 { text: 'Extruders', value: 'extruders' },
                 { text: 'Filament', value: 'filament' },
                 { text: 'Heaters', value: 'heaters' },
+                { text: 'Fans', value: 'fans' },
             ],
             components: [
                 { text: 'Nozzle', value: 'nozzle' },
@@ -116,6 +119,9 @@ export default {
             }
             if (this.scope === 'heaters') {
                 return Object.keys(this.serviceData.heaters || {})
+            }
+            if (this.scope === 'fans') {
+                return Object.keys(this.serviceData.fans || {})
             }
             return []
         },
