@@ -118,7 +118,7 @@ class VigilTracker:
             self._update_job_tracking(status, model)
             self._prev_status = status
 
-        self._update_axis_travel(model)
+        self._update_axis_travel(model, dt)
         self._update_extruder_travel(model)
         self._update_heaters(model, dt)
         self._update_fans(model, dt)
@@ -168,9 +168,14 @@ class VigilTracker:
 
         self._prev_job_file = job_file
 
-    def _update_axis_travel(self, model):
+    def _update_axis_travel(self, model, dt):
         """Track axis travel distances. Only tracks homed axes to avoid
-        false deltas from homing moves resetting positions."""
+        false deltas from homing moves resetting positions.
+
+        Uses a speed-based sanity check to reject position jumps caused by
+        re-homing an already-homed axis (the PATCH subscription can miss the
+        brief intermediate homed=False state).
+        """
         move = getattr(model, "move", None)
         if move is None:
             return
@@ -194,7 +199,11 @@ class VigilTracker:
 
             if letter in self._prev_axis_pos:
                 delta = abs(pos - self._prev_axis_pos[letter])
-                if delta > 0 and delta < 100000:  # Sanity check: < 100m per tick
+                # Reject deltas that exceed what the axis could physically
+                # travel in one tick — these are position resets from homing.
+                max_speed = getattr(axis, "speed", 500)  # mm/s
+                max_delta = max_speed * dt * 3.0  # generous margin
+                if delta > 0 and delta <= max_delta:
                     self._add_keyed("axes", letter, delta)
 
             self._prev_axis_pos[letter] = pos

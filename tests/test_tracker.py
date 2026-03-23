@@ -37,14 +37,14 @@ def _model(state=None, move=None, heat=None, job=None, boards=None,
 
 
 def _axes(*args):
-    """Build a move namespace with axes.  Each arg is (letter, machine_position)
-    or (letter, machine_position, homed).  Defaults to homed=True."""
+    """Build a move namespace with axes.  Each arg is (letter, machine_position),
+    (letter, machine_position, homed), or (letter, machine_position, homed, speed).
+    Defaults to homed=True, speed=500."""
     axis_list = []
     for a in args:
-        if len(a) == 3:
-            axis_list.append(NS(letter=a[0], machine_position=a[1], homed=a[2]))
-        else:
-            axis_list.append(NS(letter=a[0], machine_position=a[1], homed=True))
+        homed = a[2] if len(a) >= 3 else True
+        speed = a[3] if len(a) >= 4 else 500
+        axis_list.append(NS(letter=a[0], machine_position=a[1], homed=homed, speed=speed))
     return NS(axes=axis_list, extruders=[])
 
 
@@ -182,6 +182,34 @@ class TestAxisHomedFiltering:
         assert status["lifetime"]["axes"]["X"] == 50.0
         assert "Y" not in status["lifetime"]["axes"]
         assert status["lifetime"]["axes"]["Z"] == 10.0
+
+    def test_rehoming_already_homed_axis_not_tracked(self, tracker):
+        """When re-homing an already-homed axis, the PATCH subscription may
+        miss the brief homed=False intermediate state.  The position jump
+        from re-homing should not be counted as travel."""
+        tracker._timer.reset()
+        # Axis homed, normal position — speed=200 mm/s
+        tracker.update(_model(move=_axes(("X", 100, True, 200))))
+        tracker._timer._last_tick -= 0.25
+        # Re-homing: axis stays homed=True (missed the False blip),
+        # position jumps to home offset 880.  Delta 780 exceeds 200*0.25*3=150.
+        tracker.update(_model(move=_axes(("X", 880, True, 200))))
+
+        status = tracker.get_status()
+        # The 780mm jump should be rejected — only the initial baseline exists
+        assert status["lifetime"]["axes"].get("X", 0) == 0
+
+    def test_normal_travel_within_speed_limit(self, tracker):
+        """Normal moves within the speed-based limit are tracked."""
+        tracker._timer.reset()
+        tracker.update(_model(move=_axes(("X", 0, True, 500))))
+        tracker._timer._last_tick -= 0.25
+        # 100mm in 0.25s = 400mm/s, within 500*0.25*3 = 375... actually
+        # let's use a small move that clearly fits
+        tracker.update(_model(move=_axes(("X", 50, True, 500))))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["axes"]["X"] == 50.0
 
 
 class TestExtruderTracking:
