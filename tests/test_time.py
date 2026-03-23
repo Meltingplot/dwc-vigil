@@ -65,6 +65,32 @@ class TestDayTracker:
         assert tracker.detect_gap("not-a-date") is None
 
 
+class TestDayTrackerProperties:
+    def test_current_date_property(self):
+        tracker = DayTracker()
+        assert tracker.current_date == date.today()
+
+    def test_day_change_returns_previous_date(self):
+        tracker = DayTracker()
+        from datetime import timedelta
+        yesterday = date.today() - timedelta(days=1)
+        tracker._current_date = yesterday
+
+        previous = tracker.check_day_change()
+        assert previous == yesterday
+        assert tracker.current_date == date.today()
+
+    def test_day_change_updates_current(self):
+        tracker = DayTracker()
+        from datetime import timedelta
+        tracker._current_date = date.today() - timedelta(days=1)
+        tracker.check_day_change()
+        # After detecting change, current should be today
+        assert tracker.current_date == date.today()
+        # Second call should return None (no change)
+        assert tracker.check_day_change() is None
+
+
 class TestHelpers:
     def test_utc_now_iso(self):
         result = utc_now_iso()

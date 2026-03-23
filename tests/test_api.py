@@ -132,3 +132,40 @@ class TestExportEndpoint:
         resp = handle_export(tracker, "", {"format": "csv"})
         assert resp["status"] == 200
         assert resp["responseType"] == "file"
+
+    def test_default_format_is_json(self, tracker):
+        resp = handle_export(tracker, "", {})
+        assert resp["status"] == 200
+        assert resp["contentType"] == "application/json"
+
+
+class TestServiceEventInvalidJson:
+    def test_invalid_json_body(self, tracker):
+        resp = handle_service_event(tracker, "not json", {})
+        assert resp["status"] == 400
+        body = json.loads(resp["body"])
+        assert "error" in body
+
+    def test_empty_body(self, tracker):
+        resp = handle_service_event(tracker, "", {})
+        assert resp["status"] == 400  # description too short
+
+
+class TestSaveFailures:
+    def test_reset_save_failure(self, tracker, monkeypatch):
+        """Service reset should still return success even if save fails."""
+        def broken_save():
+            raise OSError("disk full")
+        monkeypatch.setattr(tracker, "save", broken_save)
+        body = json.dumps({"scope": "machine_time", "description": "Board replaced"})
+        resp = handle_service_reset(tracker, body, {})
+        assert resp["status"] == 200
+
+    def test_event_save_failure(self, tracker, monkeypatch):
+        """Service event should still return success even if save fails."""
+        def broken_save():
+            raise OSError("disk full")
+        monkeypatch.setattr(tracker, "save", broken_save)
+        body = json.dumps({"component": "nozzle", "description": "Nozzle replaced"})
+        resp = handle_service_event(tracker, body, {})
+        assert resp["status"] == 200
