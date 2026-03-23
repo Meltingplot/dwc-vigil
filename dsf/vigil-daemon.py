@@ -249,8 +249,13 @@ def main():
     update_plugin_data(cmd, tracker)
 
     # SubscribeConnection for Object Model updates
-    sub = SubscribeConnection(SubscriptionMode.PATCH)
-    sub.connect(filter=_subscribe_filter())
+    sub = SubscribeConnection(SubscriptionMode.PATCH, filter_str=_subscribe_filter())
+    sub.connect()
+
+    # First call must be get_object_model() to receive the full initial model
+    initial_model = sub.get_object_model()
+    model_dict = _object_model_to_dict(initial_model)
+    tracker.update(model_dict)
 
     logger.info("Vigil daemon started — tracking active")
 
@@ -259,9 +264,9 @@ def main():
     try:
         while not _shutdown:
             try:
-                # Receive Object Model update (blocking, ~250ms cycle)
-                model_update = sub.get_object_model()
-                model_dict = _object_model_to_dict(model_update)
+                # Receive Object Model patch (JSON string, ~250ms cycle)
+                patch_json = sub.get_object_model_patch()
+                model_dict = json.loads(patch_json)
                 tracker.update(model_dict)
             except Exception as e:
                 if _shutdown:

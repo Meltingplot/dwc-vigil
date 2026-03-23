@@ -1,6 +1,21 @@
 # DWC + DSF Plugin Developer Guide
 > Condensed lessons learned from building `dwc-meltingplot-config`.
 > Target: DWC 3.6 (`v3.6-dev`) — Vue 2.7 + Vuetify 2.7 + Vuex 3, DSF v3.6 Python backend.
+
+## ⚠️ MANDATORY: Do Not Guess API Interfaces
+**NEVER** guess or assume dsf-python, DWC, or DSF API signatures. Always clone the upstream
+source and read the actual code before writing against any interface:
+```bash
+git clone --branch v3.6-dev --depth 1 https://github.com/Duet3D/dsf-python.git /tmp/dsf-python
+```
+Then read the relevant source file to verify constructor parameters, method signatures, and
+enum values. Key files:
+- `src/dsf/connections/subscribe_connection.py` — `SubscribeConnection(subscription_mode, filter_str="", filter_list=None)`
+- `src/dsf/connections/command_connection.py` — `CommandConnection(debug=False, timeout=3)`
+- `src/dsf/connections/base_command_connection.py` — `add_http_endpoint()`, `set_plugin_data()`, etc.
+- `src/dsf/http.py` — `HttpEndpointConnection`, `HttpEndpointUnixSocket`, `HttpResponseType`
+- `src/dsf/connections/__init__.py` — `SubscriptionMode`, `InterceptionMode`, `ConnectionMode`
+
 ---
 ## 1. Plugin Manifest (`plugin.json`)
 ```jsonc
@@ -449,3 +464,6 @@ git clone --branch v3.6-dev --depth 1 https://github.com/Duet3D/DuetWebControl.g
 | Trailing slashes missing | DSF omits them — add manually |
 | Tests import daemon before mocks | Set up sys.modules mocks first, then import |
 | Vue 2 reactivity for new keys | Use `this.$set()` |
+| `SubscribeConnection()` missing args | Constructor requires `subscription_mode`; filter goes in `filter_str`/`filter_list`, NOT `connect()` |
+| `get_object_model()` in PATCH loop | First call: `get_object_model()` for full model. Loop: `get_object_model_patch()` for JSON patches |
+| Guessing API signatures | **Never guess** — clone dsf-python v3.6 and read the actual source before using any API |
