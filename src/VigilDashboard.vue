@@ -235,7 +235,12 @@ export default {
         // --- Data loading ---
         async loadStatus() {
             try {
-                this.statusData = await this.apiGet('status')
+                const newData = await this.apiGet('status')
+                // Skip update if data is unchanged to avoid reactivity cascade and chart flickering
+                if (this.statusData && JSON.stringify(this.statusData) === JSON.stringify(newData)) {
+                    return
+                }
+                this.statusData = newData
                 // Load history on first successful status
                 if (!this.historyLoaded) {
                     this.loadHistory()

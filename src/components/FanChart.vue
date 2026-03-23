@@ -17,7 +17,7 @@ export default {
         fans: { type: Object, default: () => ({}) },
     },
     data() {
-        return { chartInstance: null }
+        return { chartInstance: null, lastDataJson: '' }
     },
     computed: {
         hasData() { return Object.keys(this.fans).length > 0 }
@@ -25,7 +25,11 @@ export default {
     watch: {
         fans: {
             deep: true,
-            handler() { this.renderChart() }
+            handler() {
+                const json = JSON.stringify(this.fans)
+                if (json === this.lastDataJson) return
+                this.renderChart()
+            }
         }
     },
     mounted() {
@@ -57,6 +61,7 @@ export default {
                 if (currentLabels.length === labels.length && currentLabels.every((l, i) => l === labels[i])) {
                     this.chartInstance.data.datasets[0].data = onHours
                     this.chartInstance.update('none')
+                    this.lastDataJson = JSON.stringify(this.fans)
                     return
                 }
                 this.chartInstance.destroy()
@@ -84,6 +89,7 @@ export default {
                     }
                 }
             })
+            this.lastDataJson = JSON.stringify(this.fans)
         }
     }
 }
