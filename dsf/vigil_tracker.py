@@ -120,14 +120,15 @@ class VigilTracker:
             self._add("jobs_total", 1)
             self._dirty = True
 
-        # Job end: status transitions from processing to idle/cancelled
+        # Job end: only count when status reaches a terminal state
         if self._prev_status == "processing" and status != "processing":
             if status == "idle":
                 self._add("jobs_successful", 1)
-            else:
-                # pausing, cancelling, etc. → count as cancelled
+                self._dirty = True
+            elif status == "cancelling":
                 self._add("jobs_cancelled", 1)
-            self._dirty = True
+                self._dirty = True
+            # pausing/busy/changingTool are transient — don't count yet
 
         self._prev_job_file = job_file
 
@@ -199,9 +200,9 @@ class VigilTracker:
             if state is not None and str(state) != "off":
                 self._add_heater(key, "on_seconds", dt)
 
-                # Full load: check current PWM value
-                current = getattr(heater, "current", None)
-                if current is not None and current >= 0.95:
+                # Full load: check average PWM duty cycle
+                avg_pwm = getattr(heater, "avg_pwm", None)
+                if avg_pwm is not None and avg_pwm >= 0.95:
                     self._add_heater(key, "full_load_seconds", dt)
 
     # --- Counter helpers ---

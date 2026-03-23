@@ -39,8 +39,8 @@ def _extruders(*positions):
 
 
 def _heaters(*args):
-    """Build a heat namespace.  Each arg is (state_str, current_float)."""
-    return NS(heaters=[NS(state=s, current=c) for s, c in args])
+    """Build a heat namespace.  Each arg is (state_str, avg_pwm_float)."""
+    return NS(heaters=[NS(state=s, avg_pwm=c) for s, c in args])
 
 
 def _job(file_name):
@@ -343,7 +343,7 @@ class TestUpdateEdgeCases:
         """Heater without state attribute should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update(_model(state="idle", heat=NS(heaters=[NS(current=0.5)])))
+        tracker.update(_model(state="idle", heat=NS(heaters=[NS(avg_pwm=0.5)])))
         assert tracker.get_status()["lifetime"]["heaters"] == {}
 
     def test_axis_travel_sanity_check(self, tracker):
