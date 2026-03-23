@@ -17,6 +17,7 @@ from datetime import date
 from vigil_persistence import (
     empty_state,
     _empty_counters,
+    _empty_vitals,
     atomic_save,
     append_daily_snapshot,
     get_data_path,
@@ -41,9 +42,30 @@ class VigilTracker:
         self._prev_extruder_pos = {}  # extruder_index → position
         self._prev_status = None
         self._prev_job_file = None
+        self._prev_firmware_uptime = None
+        self._prev_sbc_uptime = None
+
+        # Ensure new state fields exist (schema migration for existing data)
+        if "vitals" not in self._data:
+            self._data["vitals"] = _empty_vitals()
+        if "uptime" not in self._data:
+            self._data["uptime"] = {
+                "firmware_uptime_secs": None,
+                "sbc_uptime_secs": None,
+                "firmware_reboots": 0,
+                "sbc_reboots": 0,
+            }
+        if "volume_free_bytes" not in self._data:
+            self._data["volume_free_bytes"] = None
+        # Ensure new counter fields exist in lifetime/service tiers
+        for tier in [self._data["lifetime"], self._data["service"]]:
+            tier.setdefault("pause_seconds", 0.0)
+            tier.setdefault("warmup_seconds", 0.0)
+            tier.setdefault("fans", {})
 
         # Day baseline for history snapshots (lifetime values at start of day)
         self._day_baseline = copy.deepcopy(self._data["lifetime"])
+        self._vitals_baseline = copy.deepcopy(self._data["vitals"])
 
         # Check for date gap at startup (close previous day)
         self._handle_startup_gap()
@@ -57,6 +79,8 @@ class VigilTracker:
             # The previous day's data was saved at shutdown, so the snapshot
             # should already have been written. Reset baseline for today.
             self._day_baseline = copy.deepcopy(self._data["lifetime"])
+            self._vitals_baseline = copy.deepcopy(self._data["vitals"])
+            self._data["vitals"] = _empty_vitals()
 
     @property
     def dirty(self) -> bool:
@@ -97,6 +121,11 @@ class VigilTracker:
         self._update_axis_travel(model)
         self._update_extruder_travel(model)
         self._update_heaters(model, dt)
+        self._update_fans(model, dt)
+        self._update_board_vitals(model)
+        self._update_sbc_vitals(model)
+        self._update_uptime(model)
+        self._update_volume(model)
 
         # Check day change
         self._check_day_change()
@@ -108,6 +137,13 @@ class VigilTracker:
 
         if status == "processing":
             self._add("print_seconds", dt)
+
+        if status in ("pausing", "paused"):
+            self._add("pause_seconds", dt)
+
+        if status == "busy" and self._prev_job_file is not None and self._prev_status in (None, "idle", "busy"):
+            # Warm-up is the "busy" phase before "processing" starts during a job
+            self._add("warmup_seconds", dt)
 
     def _update_job_tracking(self, status: str, model):
         """Track job start/end transitions."""
@@ -133,7 +169,8 @@ class VigilTracker:
         self._prev_job_file = job_file
 
     def _update_axis_travel(self, model):
-        """Track axis travel distances."""
+        """Track axis travel distances. Only tracks homed axes to avoid
+        false deltas from homing moves resetting positions."""
         move = getattr(model, "move", None)
         if move is None:
             return
@@ -144,9 +181,16 @@ class VigilTracker:
         for axis in axes:
             letter = getattr(axis, "letter", None)
             pos = getattr(axis, "machine_position", None)
+            homed = getattr(axis, "homed", False)
             if letter is None or pos is None:
                 continue
             letter = str(letter)
+
+            if not homed:
+                # Clear previous position so we don't get a false delta
+                # when the axis becomes homed
+                self._prev_axis_pos.pop(letter, None)
+                continue
 
             if letter in self._prev_axis_pos:
                 delta = abs(pos - self._prev_axis_pos[letter])
@@ -204,6 +248,142 @@ class VigilTracker:
                 avg_pwm = getattr(heater, "avg_pwm", None)
                 if avg_pwm is not None and avg_pwm >= 0.95:
                     self._add_heater(key, "full_load_seconds", dt)
+
+    def _update_fans(self, model, dt: float):
+        """Track fan runtime."""
+        fans = getattr(model, "fans", None)
+        if fans is None:
+            return
+
+        for i, fan in enumerate(fans):
+            if fan is None:
+                continue
+            actual = getattr(fan, "actual_value", None)
+            key = str(i)
+
+            if actual is not None and actual > 0:
+                self._add_fan(key, "on_seconds", dt)
+
+    def _update_board_vitals(self, model):
+        """Track board MCU temp, vIn, v12 min/max."""
+        boards = getattr(model, "boards", None)
+        if not boards:
+            return
+
+        # Use first board (main board)
+        board = boards[0] if boards else None
+        if board is None:
+            return
+
+        vitals = self._data["vitals"]
+
+        mcu_temp = getattr(board, "mcu_temp", None)
+        if mcu_temp is not None:
+            current = getattr(mcu_temp, "current", None)
+            if current is not None:
+                self._update_min_max(vitals, "mcu_temp", current)
+
+        v_in = getattr(board, "v_in", None)
+        if v_in is not None:
+            current = getattr(v_in, "current", None)
+            if current is not None:
+                self._update_min_max(vitals, "vin", current)
+
+        v12 = getattr(board, "v12", None)
+        if v12 is not None:
+            current = getattr(v12, "current", None)
+            if current is not None:
+                self._update_min_max(vitals, "v12", current)
+
+        self._dirty = True
+
+    def _update_sbc_vitals(self, model):
+        """Track SBC CPU temp, load, and memory."""
+        sbc = getattr(model, "sbc", None)
+        if sbc is None:
+            return
+
+        vitals = self._data["vitals"]
+
+        cpu = getattr(sbc, "cpu", None)
+        if cpu is not None:
+            temp = getattr(cpu, "temperature", None)
+            if temp is not None:
+                if vitals["sbc_cpu_temp_max"] is None or temp > vitals["sbc_cpu_temp_max"]:
+                    vitals["sbc_cpu_temp_max"] = temp
+
+            avg_load = getattr(cpu, "avg_load", None)
+            if avg_load is not None:
+                vitals["sbc_cpu_load_avg_sum"] += avg_load
+                vitals["sbc_cpu_load_avg_count"] += 1
+
+        memory = getattr(sbc, "memory", None)
+        if memory is not None:
+            available = getattr(memory, "available", None)
+            if available is not None:
+                if vitals["sbc_memory_min_bytes"] is None or available < vitals["sbc_memory_min_bytes"]:
+                    vitals["sbc_memory_min_bytes"] = available
+
+        self._dirty = True
+
+    def _update_uptime(self, model):
+        """Track firmware and SBC uptime, detect reboots."""
+        state = getattr(model, "state", None)
+        if state is not None:
+            up_time = getattr(state, "up_time", None)
+            if up_time is not None:
+                if (self._prev_firmware_uptime is not None
+                        and up_time < self._prev_firmware_uptime):
+                    self._data["uptime"]["firmware_reboots"] += 1
+                    self._dirty = True
+                self._prev_firmware_uptime = up_time
+                self._data["uptime"]["firmware_uptime_secs"] = up_time
+
+        sbc = getattr(model, "sbc", None)
+        if sbc is not None:
+            sbc_uptime = getattr(sbc, "uptime", None)
+            if sbc_uptime is not None:
+                if (self._prev_sbc_uptime is not None
+                        and sbc_uptime < self._prev_sbc_uptime):
+                    self._data["uptime"]["sbc_reboots"] += 1
+                    self._dirty = True
+                self._prev_sbc_uptime = sbc_uptime
+                self._data["uptime"]["sbc_uptime_secs"] = sbc_uptime
+
+    def _update_volume(self, model):
+        """Track volume free space (first mounted volume)."""
+        volumes = getattr(model, "volumes", None)
+        if not volumes:
+            return
+
+        for vol in volumes:
+            if vol is None:
+                continue
+            mounted = getattr(vol, "mounted", None)
+            if mounted:
+                free = getattr(vol, "free_space", None)
+                if free is not None:
+                    self._data["volume_free_bytes"] = free
+                    self._dirty = True
+                break
+
+    @staticmethod
+    def _update_min_max(vitals: dict, prefix: str, value: float):
+        """Update min/max tracking for a vitals prefix."""
+        min_key = f"{prefix}_min"
+        max_key = f"{prefix}_max"
+        if vitals[min_key] is None or value < vitals[min_key]:
+            vitals[min_key] = value
+        if vitals[max_key] is None or value > vitals[max_key]:
+            vitals[max_key] = value
+
+    def _add_fan(self, key: str, field: str, value: float):
+        """Add to a fan counter across all three tiers."""
+        for tier in [self._data["lifetime"], self._data["service"], self._session]:
+            if key not in tier["fans"]:
+                tier["fans"][key] = {"on_seconds": 0.0}
+            tier["fans"][key][field] += value
+        self._dirty = True
 
     # --- Counter helpers ---
 
@@ -282,6 +462,21 @@ class VigilTracker:
                     values_before[k] = copy.deepcopy(service["heaters"][k])
                     service["heaters"][k] = {"on_seconds": 0.0, "full_load_seconds": 0.0}
 
+        elif scope == "fans":
+            target_keys = keys if keys else list(service["fans"].keys())
+            for k in target_keys:
+                if k in service["fans"]:
+                    values_before[k] = copy.deepcopy(service["fans"][k])
+                    service["fans"][k] = {"on_seconds": 0.0}
+
+        elif scope == "pause_time":
+            values_before["pause_seconds"] = service["pause_seconds"]
+            service["pause_seconds"] = 0.0
+
+        elif scope == "warmup_time":
+            values_before["warmup_seconds"] = service["warmup_seconds"]
+            service["warmup_seconds"] = 0.0
+
         else:
             raise ValueError(f"Unknown reset scope: {scope}")
 
@@ -322,6 +517,9 @@ class VigilTracker:
         if previous_date is not None:
             self._create_daily_snapshot(previous_date)
             self._day_baseline = copy.deepcopy(self._data["lifetime"])
+            # Reset daily vitals for the new day
+            self._vitals_baseline = copy.deepcopy(self._data["vitals"])
+            self._data["vitals"] = _empty_vitals()
 
     def create_shutdown_snapshot(self):
         """Create a snapshot for the current day at shutdown."""
@@ -336,6 +534,8 @@ class VigilTracker:
             "date": snapshot_date.isoformat(),
             "machine_hours": round((lt["machine_seconds"] - bl["machine_seconds"]) / 3600, 2),
             "print_hours": round((lt["print_seconds"] - bl["print_seconds"]) / 3600, 2),
+            "pause_hours": round((lt["pause_seconds"] - bl["pause_seconds"]) / 3600, 2),
+            "warmup_hours": round((lt["warmup_seconds"] - bl["warmup_seconds"]) / 3600, 2),
             "jobs_total": lt["jobs_total"] - bl["jobs_total"],
             "jobs_successful": lt["jobs_successful"] - bl["jobs_successful"],
             "jobs_cancelled": lt["jobs_cancelled"] - bl["jobs_cancelled"],
@@ -371,6 +571,49 @@ class VigilTracker:
         if heater_hours:
             snapshot["heater_on_hours"] = heater_hours
 
+        # Fan on-hours delta
+        fan_hours = {}
+        for f, vals in lt["fans"].items():
+            baseline_f = bl["fans"].get(f, {})
+            delta = vals.get("on_seconds", 0) - baseline_f.get("on_seconds", 0)
+            if delta > 0:
+                fan_hours[f] = round(delta / 3600, 2)
+        if fan_hours:
+            snapshot["fan_on_hours"] = fan_hours
+
+        # Board/SBC vitals (from the day's vitals, not from deltas)
+        vitals = self._data["vitals"]
+        if vitals["mcu_temp_max"] is not None:
+            snapshot["mcu_temp_max"] = round(vitals["mcu_temp_max"], 1)
+        if vitals["mcu_temp_min"] is not None:
+            snapshot["mcu_temp_min"] = round(vitals["mcu_temp_min"], 1)
+        if vitals["vin_min"] is not None:
+            snapshot["vin_min"] = round(vitals["vin_min"], 2)
+        if vitals["vin_max"] is not None:
+            snapshot["vin_max"] = round(vitals["vin_max"], 2)
+        if vitals["v12_min"] is not None:
+            snapshot["v12_min"] = round(vitals["v12_min"], 2)
+        if vitals["v12_max"] is not None:
+            snapshot["v12_max"] = round(vitals["v12_max"], 2)
+        if vitals["sbc_cpu_temp_max"] is not None:
+            snapshot["sbc_cpu_temp_max"] = round(vitals["sbc_cpu_temp_max"], 1)
+        if vitals["sbc_cpu_load_avg_count"] > 0:
+            avg = vitals["sbc_cpu_load_avg_sum"] / vitals["sbc_cpu_load_avg_count"]
+            snapshot["sbc_cpu_load_avg"] = round(avg, 3)
+        if vitals["sbc_memory_min_bytes"] is not None:
+            snapshot["sbc_memory_min_mb"] = round(vitals["sbc_memory_min_bytes"] / (1024 * 1024), 1)
+
+        # Uptime / reboots
+        uptime = self._data["uptime"]
+        if uptime["firmware_reboots"] > 0:
+            snapshot["firmware_reboots"] = uptime["firmware_reboots"]
+        if uptime["sbc_reboots"] > 0:
+            snapshot["sbc_reboots"] = uptime["sbc_reboots"]
+
+        # Volume free space
+        if self._data["volume_free_bytes"] is not None:
+            snapshot["volume_free_mb"] = round(self._data["volume_free_bytes"] / (1024 * 1024), 1)
+
         try:
             append_daily_snapshot(snapshot)
             logger.info("Daily snapshot created for %s", snapshot_date)
@@ -385,6 +628,9 @@ class VigilTracker:
             "lifetime": self._data["lifetime"],
             "service": self._data["service"],
             "session": self._session,
+            "vitals": self._data["vitals"],
+            "uptime": self._data["uptime"],
+            "volume_free_bytes": self._data["volume_free_bytes"],
         }
 
     def get_plugin_data_summary(self) -> dict:
@@ -418,6 +664,9 @@ class VigilTracker:
             "service": self._data["service"],
             "session": self._session,
             "service_log": self._data["service_log"],
+            "vitals": self._data["vitals"],
+            "uptime": self._data["uptime"],
+            "volume_free_bytes": self._data["volume_free_bytes"],
         }
 
     def export_csv(self) -> str:
@@ -428,7 +677,8 @@ class VigilTracker:
                                       ("service", self._data["service"]),
                                       ("session", self._session)]:
             # Scalar counters
-            for key in ["machine_seconds", "print_seconds", "jobs_total",
+            for key in ["machine_seconds", "print_seconds", "pause_seconds",
+                        "warmup_seconds", "jobs_total",
                         "jobs_successful", "jobs_cancelled"]:
                 lines.append(f"{tier_name},{key},,{tier_data.get(key, 0)}")
 
@@ -444,5 +694,30 @@ class VigilTracker:
             for h, vals in tier_data.get("heaters", {}).items():
                 lines.append(f"{tier_name},heater_on_seconds,{h},{vals.get('on_seconds', 0)}")
                 lines.append(f"{tier_name},heater_full_load_seconds,{h},{vals.get('full_load_seconds', 0)}")
+
+            # Fans
+            for f, vals in tier_data.get("fans", {}).items():
+                lines.append(f"{tier_name},fan_on_seconds,{f},{vals.get('on_seconds', 0)}")
+
+        # Vitals (not tiered)
+        vitals = self._data.get("vitals", {})
+        for key in ["mcu_temp_min", "mcu_temp_max", "vin_min", "vin_max",
+                     "v12_min", "v12_max", "sbc_cpu_temp_max", "sbc_memory_min_bytes"]:
+            val = vitals.get(key)
+            if val is not None:
+                lines.append(f"vitals,{key},,{val}")
+
+        # Uptime
+        uptime = self._data.get("uptime", {})
+        for key in ["firmware_uptime_secs", "sbc_uptime_secs",
+                     "firmware_reboots", "sbc_reboots"]:
+            val = uptime.get(key)
+            if val is not None:
+                lines.append(f"uptime,{key},,{val}")
+
+        # Volume
+        vol_free = self._data.get("volume_free_bytes")
+        if vol_free is not None:
+            lines.append(f"volume,free_bytes,,{vol_free}")
 
         return "\n".join(lines) + "\n"

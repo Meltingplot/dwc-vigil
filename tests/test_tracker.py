@@ -13,24 +13,39 @@ from vigil_persistence import empty_state
 from vigil_tracker import VigilTracker
 
 
-def _model(state=None, move=None, heat=None, job=None):
+def _model(state=None, move=None, heat=None, job=None, boards=None,
+           fans=None, sbc=None, volumes=None, up_time=None):
     """Build a minimal ObjectModel-like namespace."""
     m = NS()
-    if state is not None:
-        m.state = NS(status=state)
+    if state is not None or up_time is not None:
+        m.state = NS(status=state, up_time=up_time)
     if move is not None:
         m.move = move
     if heat is not None:
         m.heat = heat
     if job is not None:
         m.job = job
+    if boards is not None:
+        m.boards = boards
+    if fans is not None:
+        m.fans = fans
+    if sbc is not None:
+        m.sbc = sbc
+    if volumes is not None:
+        m.volumes = volumes
     return m
 
 
 def _axes(*args):
-    """Build a move namespace with axes.  Each arg is (letter, machine_position)."""
-    return NS(axes=[NS(letter=l, machine_position=p) for l, p in args],
-              extruders=[])
+    """Build a move namespace with axes.  Each arg is (letter, machine_position)
+    or (letter, machine_position, homed).  Defaults to homed=True."""
+    axis_list = []
+    for a in args:
+        if len(a) == 3:
+            axis_list.append(NS(letter=a[0], machine_position=a[1], homed=a[2]))
+        else:
+            axis_list.append(NS(letter=a[0], machine_position=a[1], homed=True))
+    return NS(axes=axis_list, extruders=[])
 
 
 def _extruders(*positions):
@@ -122,6 +137,51 @@ class TestAxisTracking:
         assert "X" in status["lifetime"]["axes"]
         assert "Y" in status["lifetime"]["axes"]
         assert "Z" in status["lifetime"]["axes"]
+
+
+class TestAxisHomedFiltering:
+    def test_unhomed_axis_not_tracked(self, tracker):
+        tracker._timer.reset()
+        tracker.update(_model(move=_axes(("X", 0, False))))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(move=_axes(("X", 100, False))))
+
+        status = tracker.get_status()
+        assert "X" not in status["lifetime"]["axes"]
+
+    def test_homed_axis_tracked(self, tracker):
+        tracker._timer.reset()
+        tracker.update(_model(move=_axes(("X", 0, True))))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(move=_axes(("X", 100, True))))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["axes"]["X"] == 100.0
+
+    def test_axis_becoming_homed_no_false_delta(self, tracker):
+        """When axis transitions from unhomed to homed, the position
+        jump from homing should not be counted as travel."""
+        tracker._timer.reset()
+        # Unhomed at position 500 (arbitrary pre-homing position)
+        tracker.update(_model(move=_axes(("X", 500, False))))
+        tracker._timer._last_tick -= 0.25
+        # Now homed, position reset to 0 — no delta should be recorded
+        tracker.update(_model(move=_axes(("X", 0, True))))
+
+        status = tracker.get_status()
+        assert "X" not in status["lifetime"]["axes"]
+
+    def test_mixed_homed_unhomed(self, tracker):
+        """Only homed axes get tracked in a multi-axis setup."""
+        tracker._timer.reset()
+        tracker.update(_model(move=_axes(("X", 0, True), ("Y", 0, False), ("Z", 0, True))))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(move=_axes(("X", 50, True), ("Y", 100, False), ("Z", 10, True))))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["axes"]["X"] == 50.0
+        assert "Y" not in status["lifetime"]["axes"]
+        assert status["lifetime"]["axes"]["Z"] == 10.0
 
 
 class TestExtruderTracking:
@@ -322,7 +382,7 @@ class TestUpdateEdgeCases:
         """Axis without machine_position should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update(_model(state="idle", move=NS(axes=[NS(letter="X")], extruders=[])))
+        tracker.update(_model(state="idle", move=NS(axes=[NS(letter="X", homed=True)], extruders=[])))
         assert "X" not in tracker.get_status()["lifetime"]["axes"]
 
     def test_extruder_missing_position(self, tracker):
@@ -554,7 +614,450 @@ class TestExportWithData:
         assert "lifetime,heater_on_seconds,0,3600" in csv
         assert "lifetime,heater_full_load_seconds,0,100" in csv
 
+    def test_csv_export_with_fans(self, tracker):
+        tracker._data["lifetime"]["fans"] = {"0": {"on_seconds": 7200}}
+        csv = tracker.export_csv()
+        assert "lifetime,fan_on_seconds,0,7200" in csv
+
+    def test_csv_export_with_vitals(self, tracker):
+        tracker._data["vitals"]["mcu_temp_max"] = 55.3
+        tracker._data["vitals"]["vin_min"] = 23.8
+        csv = tracker.export_csv()
+        assert "vitals,mcu_temp_max,,55.3" in csv
+        assert "vitals,vin_min,,23.8" in csv
+
+    def test_csv_export_with_uptime(self, tracker):
+        tracker._data["uptime"]["firmware_reboots"] = 2
+        csv = tracker.export_csv()
+        assert "uptime,firmware_reboots,,2" in csv
+
     def test_json_export_has_schema_version(self, tracker):
         export = tracker.export_json()
         assert export["schema_version"] == 1
         assert "service_log" in export
+        assert "vitals" in export
+        assert "uptime" in export
+        assert "volume_free_bytes" in export
+
+
+class TestFanTracking:
+    def test_fan_on_time(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(
+            state="idle",
+            fans=[NS(actual_value=0.8)],
+        ))
+
+        status = tracker.get_status()
+        assert "0" in status["lifetime"]["fans"]
+        assert status["lifetime"]["fans"]["0"]["on_seconds"] > 0
+
+    def test_fan_off_not_tracked(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(
+            state="idle",
+            fans=[NS(actual_value=0.0)],
+        ))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["fans"] == {}
+
+    def test_multiple_fans(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(
+            state="idle",
+            fans=[NS(actual_value=1.0), NS(actual_value=0.5)],
+        ))
+
+        status = tracker.get_status()
+        assert "0" in status["lifetime"]["fans"]
+        assert "1" in status["lifetime"]["fans"]
+
+    def test_none_fan_skipped(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(
+            state="idle",
+            fans=[None, NS(actual_value=1.0)],
+        ))
+
+        status = tracker.get_status()
+        assert "0" not in status["lifetime"]["fans"]
+        assert "1" in status["lifetime"]["fans"]
+
+
+class TestBoardVitals:
+    def test_mcu_temp_tracking(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            boards=[NS(mcu_temp=NS(current=45.2), v_in=None, v12=None)],
+        ))
+
+        vitals = tracker._data["vitals"]
+        assert vitals["mcu_temp_min"] == 45.2
+        assert vitals["mcu_temp_max"] == 45.2
+
+    def test_mcu_temp_min_max(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            boards=[NS(mcu_temp=NS(current=40.0), v_in=None, v12=None)],
+        ))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            boards=[NS(mcu_temp=NS(current=55.0), v_in=None, v12=None)],
+        ))
+
+        vitals = tracker._data["vitals"]
+        assert vitals["mcu_temp_min"] == 40.0
+        assert vitals["mcu_temp_max"] == 55.0
+
+    def test_vin_tracking(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            boards=[NS(mcu_temp=None, v_in=NS(current=24.1), v12=None)],
+        ))
+
+        vitals = tracker._data["vitals"]
+        assert vitals["vin_min"] == 24.1
+        assert vitals["vin_max"] == 24.1
+
+    def test_v12_tracking(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            boards=[NS(mcu_temp=None, v_in=None, v12=NS(current=12.05))],
+        ))
+
+        vitals = tracker._data["vitals"]
+        assert vitals["v12_min"] == 12.05
+        assert vitals["v12_max"] == 12.05
+
+    def test_no_boards_is_safe(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle"))
+        # Should not crash
+        assert tracker._data["vitals"]["mcu_temp_max"] is None
+
+
+class TestSbcVitals:
+    def test_sbc_cpu_temp(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            sbc=NS(cpu=NS(temperature=62.5, avg_load=None), memory=None, uptime=None),
+        ))
+
+        vitals = tracker._data["vitals"]
+        assert vitals["sbc_cpu_temp_max"] == 62.5
+
+    def test_sbc_cpu_load_avg(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            sbc=NS(cpu=NS(temperature=None, avg_load=0.15), memory=None, uptime=None),
+        ))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            sbc=NS(cpu=NS(temperature=None, avg_load=0.25), memory=None, uptime=None),
+        ))
+
+        vitals = tracker._data["vitals"]
+        assert vitals["sbc_cpu_load_avg_count"] == 2
+        avg = vitals["sbc_cpu_load_avg_sum"] / vitals["sbc_cpu_load_avg_count"]
+        assert abs(avg - 0.2) < 0.001
+
+    def test_sbc_memory_min(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            sbc=NS(cpu=None, memory=NS(available=500_000_000), uptime=None),
+        ))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            sbc=NS(cpu=None, memory=NS(available=300_000_000), uptime=None),
+        ))
+
+        vitals = tracker._data["vitals"]
+        assert vitals["sbc_memory_min_bytes"] == 300_000_000
+
+
+class TestUptimeTracking:
+    def test_firmware_uptime_recorded(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle", up_time=1000))
+
+        assert tracker._data["uptime"]["firmware_uptime_secs"] == 1000
+
+    def test_firmware_reboot_detected(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle", up_time=1000))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle", up_time=5))
+
+        assert tracker._data["uptime"]["firmware_reboots"] == 1
+
+    def test_firmware_uptime_increasing_no_reboot(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle", up_time=1000))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle", up_time=1250))
+
+        assert tracker._data["uptime"]["firmware_reboots"] == 0
+
+    def test_sbc_reboot_detected(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            sbc=NS(cpu=None, memory=None, uptime=5000),
+        ))
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            sbc=NS(cpu=None, memory=None, uptime=10),
+        ))
+
+        assert tracker._data["uptime"]["sbc_reboots"] == 1
+
+
+class TestVolumeTracking:
+    def test_volume_free_space(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            volumes=[NS(mounted=True, free_space=5_000_000_000)],
+        ))
+
+        assert tracker._data["volume_free_bytes"] == 5_000_000_000
+
+    def test_unmounted_volume_skipped(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            volumes=[NS(mounted=False, free_space=5_000_000_000)],
+        ))
+
+        assert tracker._data["volume_free_bytes"] is None
+
+    def test_first_mounted_volume_used(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(
+            state="idle",
+            volumes=[
+                NS(mounted=False, free_space=1_000),
+                NS(mounted=True, free_space=9_000_000_000),
+            ],
+        ))
+
+        assert tracker._data["volume_free_bytes"] == 9_000_000_000
+
+
+class TestPauseWarmupTracking:
+    def test_pause_time_tracked(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="paused"))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["pause_seconds"] > 0
+
+    def test_pausing_state_tracked(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="pausing"))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["pause_seconds"] > 0
+
+    def test_idle_no_pause(self, tracker):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="idle"))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["pause_seconds"] == 0.0
+
+
+class TestServiceResetNewScopes:
+    def test_reset_fans(self, tracker, data_dir):
+        tracker._data["service"]["fans"] = {"0": {"on_seconds": 7200}}
+        values = tracker.service_reset("fans", description="Fan replaced")
+        assert values["0"]["on_seconds"] == 7200
+        assert tracker._data["service"]["fans"]["0"]["on_seconds"] == 0.0
+
+    def test_reset_fans_selective(self, tracker, data_dir):
+        tracker._data["service"]["fans"] = {"0": {"on_seconds": 100}, "1": {"on_seconds": 200}}
+        values = tracker.service_reset("fans", keys=["0"], description="Fan 0 replaced")
+        assert "0" in values
+        assert "1" not in values
+        assert tracker._data["service"]["fans"]["1"]["on_seconds"] == 200
+
+    def test_reset_pause_time(self, tracker, data_dir):
+        tracker._data["service"]["pause_seconds"] = 3600.0
+        values = tracker.service_reset("pause_time", description="Reset pause")
+        assert values["pause_seconds"] == 3600.0
+        assert tracker._data["service"]["pause_seconds"] == 0.0
+
+    def test_reset_warmup_time(self, tracker, data_dir):
+        tracker._data["service"]["warmup_seconds"] = 1800.0
+        values = tracker.service_reset("warmup_time", description="Reset warmup")
+        assert values["warmup_seconds"] == 1800.0
+        assert tracker._data["service"]["warmup_seconds"] == 0.0
+
+
+class TestSnapshotNewFields:
+    def test_snapshot_includes_fan_hours(self, tracker, data_dir):
+        tracker._data["lifetime"]["fans"] = {"0": {"on_seconds": 7200}}
+        tracker.create_shutdown_snapshot()
+
+        from vigil_persistence import load_month_history
+        from datetime import date
+        ym = date.today().strftime("%Y-%m")
+        month = load_month_history(ym)
+        snap = month["days"][0]
+        assert "fan_on_hours" in snap
+        assert snap["fan_on_hours"]["0"] == 2.0
+
+    def test_snapshot_includes_vitals(self, tracker, data_dir):
+        tracker._data["vitals"]["mcu_temp_max"] = 55.3
+        tracker._data["vitals"]["mcu_temp_min"] = 38.1
+        tracker._data["vitals"]["vin_min"] = 23.8
+        tracker._data["vitals"]["vin_max"] = 24.2
+        tracker.create_shutdown_snapshot()
+
+        from vigil_persistence import load_month_history
+        from datetime import date
+        ym = date.today().strftime("%Y-%m")
+        month = load_month_history(ym)
+        snap = month["days"][0]
+        assert snap["mcu_temp_max"] == 55.3
+        assert snap["mcu_temp_min"] == 38.1
+        assert snap["vin_min"] == 23.8
+        assert snap["vin_max"] == 24.2
+
+    def test_snapshot_includes_sbc_vitals(self, tracker, data_dir):
+        tracker._data["vitals"]["sbc_cpu_temp_max"] = 62.5
+        tracker._data["vitals"]["sbc_cpu_load_avg_sum"] = 0.6
+        tracker._data["vitals"]["sbc_cpu_load_avg_count"] = 3
+        tracker._data["vitals"]["sbc_memory_min_bytes"] = 300_000_000
+        tracker.create_shutdown_snapshot()
+
+        from vigil_persistence import load_month_history
+        from datetime import date
+        ym = date.today().strftime("%Y-%m")
+        month = load_month_history(ym)
+        snap = month["days"][0]
+        assert snap["sbc_cpu_temp_max"] == 62.5
+        assert snap["sbc_cpu_load_avg"] == 0.2
+        assert snap["sbc_memory_min_mb"] == 286.1  # 300M / 1024 / 1024
+
+    def test_snapshot_includes_reboots(self, tracker, data_dir):
+        tracker._data["uptime"]["firmware_reboots"] = 2
+        tracker.create_shutdown_snapshot()
+
+        from vigil_persistence import load_month_history
+        from datetime import date
+        ym = date.today().strftime("%Y-%m")
+        month = load_month_history(ym)
+        snap = month["days"][0]
+        assert snap["firmware_reboots"] == 2
+
+    def test_snapshot_includes_volume(self, tracker, data_dir):
+        tracker._data["volume_free_bytes"] = 5_000_000_000
+        tracker.create_shutdown_snapshot()
+
+        from vigil_persistence import load_month_history
+        from datetime import date
+        ym = date.today().strftime("%Y-%m")
+        month = load_month_history(ym)
+        snap = month["days"][0]
+        assert snap["volume_free_mb"] == 4768.4  # 5G / 1024 / 1024
+
+    def test_snapshot_omits_none_vitals(self, tracker, data_dir):
+        """Vitals that are None should not appear in snapshot."""
+        tracker.create_shutdown_snapshot()
+
+        from vigil_persistence import load_month_history
+        from datetime import date
+        ym = date.today().strftime("%Y-%m")
+        month = load_month_history(ym)
+        snap = month["days"][0]
+        assert "mcu_temp_max" not in snap
+        assert "vin_min" not in snap
+        assert "sbc_cpu_temp_max" not in snap
+        assert "firmware_reboots" not in snap
+        assert "volume_free_mb" not in snap
+
+
+class TestStatusIncludesNewFields:
+    def test_status_has_vitals(self, tracker):
+        status = tracker.get_status()
+        assert "vitals" in status
+        assert "uptime" in status
+        assert "volume_free_bytes" in status
+
+    def test_initial_vitals_are_none(self, tracker):
+        status = tracker.get_status()
+        assert status["vitals"]["mcu_temp_max"] is None
+        assert status["uptime"]["firmware_reboots"] == 0
+        assert status["volume_free_bytes"] is None
+
+
+class TestSchemaMigration:
+    def test_old_data_gets_new_fields(self, data_dir):
+        """Loading old data without new fields should add defaults."""
+        old_data = {
+            "schema_version": 1,
+            "last_saved": "",
+            "lifetime": {
+                "machine_seconds": 1000,
+                "print_seconds": 500,
+                "jobs_total": 3,
+                "jobs_successful": 2,
+                "jobs_cancelled": 1,
+                "axes": {"X": 100},
+                "filament_mm": {"E0": 50},
+                "heaters": {},
+            },
+            "service": {
+                "machine_seconds": 100,
+                "print_seconds": 50,
+                "jobs_total": 1,
+                "jobs_successful": 1,
+                "jobs_cancelled": 0,
+                "axes": {},
+                "filament_mm": {},
+                "heaters": {},
+            },
+            "service_log": [],
+        }
+        tracker = VigilTracker(old_data)
+        assert "vitals" in tracker._data
+        assert "uptime" in tracker._data
+        assert "volume_free_bytes" in tracker._data
+        assert tracker._data["lifetime"]["pause_seconds"] == 0.0
+        assert tracker._data["lifetime"]["fans"] == {}
+        assert tracker._data["service"]["warmup_seconds"] == 0.0
