@@ -91,7 +91,7 @@ from vigil_persistence import load_data, ensure_data_dir, SAVE_INTERVAL_S
 from vigil_api import ENDPOINTS, json_response, error_response
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(message)s",
     stream=sys.stdout,
 )
@@ -109,7 +109,7 @@ def _signal_handler(signum, frame):
     """Handle SIGTERM/SIGINT: save data and exit."""
     global _shutdown
     _shutdown = True
-    logger.info("Signal %d received, shutting down...", signum)
+    logger.debug("Signal %d received, shutting down...", signum)
 
 
 def set_plugin_data(cmd, key, value):
@@ -199,7 +199,7 @@ def main():
 
     # Register HTTP endpoints
     endpoints = register_endpoints(cmd, tracker)
-    logger.info("Registered %d HTTP endpoints", len(endpoints))
+    logger.debug("Registered %d HTTP endpoints", len(endpoints))
 
     # Push initial plugin data
     update_plugin_data(cmd, tracker)
@@ -212,7 +212,7 @@ def main():
     object_model = sub.get_object_model()
     tracker.update(object_model)
 
-    logger.info("Vigil daemon started — tracking active")
+    logger.debug("Vigil daemon started — tracking active")
 
     last_save = time.monotonic()
 
@@ -246,7 +246,7 @@ def main():
 
     finally:
         # Shutdown: create final snapshot and save
-        logger.info("Saving final state...")
+        logger.debug("Saving final state...")
         try:
             tracker.create_shutdown_snapshot()
             tracker.save()
@@ -268,7 +268,7 @@ def main():
         except Exception:
             pass
 
-        logger.info("Vigil daemon stopped")
+        logger.debug("Vigil daemon stopped")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ module.exports = {
     },
     testMatch: ['**/tests/frontend/**/*.test.js'],
     moduleNameMapper: {
-        '^@/(.*)$': '<rootDir>/src/$1'
+        '^@/(.*)$': '<rootDir>/src/$1',
+        '^chart\\.js$': '<rootDir>/tests/frontend/__mocks__/chart.js'
     },
     setupFiles: ['./tests/frontend/setup.js'],
     collectCoverageFrom: [

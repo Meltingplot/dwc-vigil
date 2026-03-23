@@ -24,7 +24,7 @@
             <td class="font-weight-medium">{{ formatTemp(vitals.sbc_cpu_temp_max) }} (max)</td>
           </tr>
           <tr v-if="sbcCpuLoadAvg != null">
-            <td class="text-caption grey--text">SBC CPU Load</td>
+            <td class="text-caption grey--text">SBC CPU Load (avg)</td>
             <td class="font-weight-medium">{{ sbcCpuLoadAvg }}%</td>
           </tr>
           <tr v-if="vitals.sbc_memory_min_bytes != null">
@@ -85,7 +85,7 @@ export default {
         sbcCpuLoadAvg() {
             const count = this.vitals.sbc_cpu_load_avg_count
             if (!count || count === 0) return null
-            return (this.vitals.sbc_cpu_load_avg_sum / count * 100).toFixed(1)
+            return Math.min(100, Math.max(0, this.vitals.sbc_cpu_load_avg_sum / count * 100)).toFixed(1)
         },
         hasData() {
             return this.hasMcuTemp || this.hasVin || this.hasV12

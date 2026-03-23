@@ -11,6 +11,8 @@
 </template>
 
 <script>
+import Chart from 'chart.js'
+
 export default {
     name: 'JobsPieChart',
     props: {
@@ -18,7 +20,7 @@ export default {
         cancelled: { type: Number, default: 0 },
     },
     data() {
-        return { chartInstance: null }
+        return { chart: null }
     },
     computed: {
         hasData() { return this.successful > 0 || this.cancelled > 0 }
@@ -28,35 +30,22 @@ export default {
         cancelled() { this.renderChart() },
     },
     mounted() {
-        this.loadChartJs()
+        this.renderChart()
     },
     beforeDestroy() {
-        if (this.chartInstance) this.chartInstance.destroy()
+        if (this.chart) this.chart.destroy()
     },
     methods: {
-        async loadChartJs() {
-            if (typeof window.Chart === 'undefined') {
-                // Chart.js is bundled with the plugin
-                try {
-                    await import('chart.js/auto')
-                } catch {
-                    // Chart.js not available
-                    return
-                }
-            }
-            this.renderChart()
-        },
         renderChart() {
-            if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
+            if (!this.$refs.chart || !this.hasData) return
 
-            // Update in-place to avoid animation replay on poll
-            if (this.chartInstance) {
-                this.chartInstance.data.datasets[0].data = [this.successful, this.cancelled]
-                this.chartInstance.update('none')
+            if (this.chart) {
+                this.chart.config.data.datasets[0].data = [this.successful, this.cancelled]
+                this.chart.update()
                 return
             }
 
-            this.chartInstance = new window.Chart(this.$refs.chart, {
+            this.chart = new Chart(this.$refs.chart, {
                 type: 'doughnut',
                 data: {
                     labels: ['Successful', 'Cancelled'],
@@ -68,9 +57,9 @@ export default {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'bottom' }
-                    }
+                    animation: { duration: 0 },
+                    responsiveAnimationDuration: 0,
+                    legend: { position: 'bottom' }
                 }
             })
         }

@@ -36,6 +36,8 @@
 </template>
 
 <script>
+import Chart from 'chart.js'
+
 const DICT_METRICS = new Set([
     'heater_on_hours', 'fan_on_hours', 'axis_travel_mm', 'filament_mm',
 ])
@@ -81,7 +83,7 @@ export default {
                 { text: 'SBC Reboots', value: 'sbc_reboots' },
                 { text: 'Disk Free (MB)', value: 'volume_free_mb' },
             ],
-            chartInstance: null,
+            chart: null,
         }
     },
     computed: {
@@ -106,7 +108,7 @@ export default {
             }
             return label
         },
-        chartData() {
+        chartValues() {
             return this.days.map(d => {
                 if (this.isDictMetric) {
                     const dict = d[this.metric]
@@ -122,7 +124,6 @@ export default {
     watch: {
         days() { this.renderChart() },
         metric() {
-            // Auto-select first subKey for dict metrics
             if (this.isDictMetric && this.subKeys.length > 0 && !this.subKeys.includes(this.subKey)) {
                 this.subKey = this.subKeys[0]
             }
@@ -131,40 +132,29 @@ export default {
         subKey() { this.renderChart() },
     },
     mounted() {
-        this.loadChartJs()
+        this.renderChart()
     },
     beforeDestroy() {
-        if (this.chartInstance) this.chartInstance.destroy()
+        if (this.chart) this.chart.destroy()
     },
     methods: {
-        async loadChartJs() {
-            if (typeof window.Chart === 'undefined') {
-                try {
-                    await import('chart.js/auto')
-                } catch {
-                    return
-                }
-            }
-            this.renderChart()
-        },
         renderChart() {
-            if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
+            if (!this.$refs.chart || !this.hasData) return
 
             const labels = this.days.map(d => d.date)
-            const data = this.chartData
+            const data = this.chartValues
             const label = this.metricLabel
 
-            // Update in-place to avoid animation replay on poll
-            if (this.chartInstance) {
-                this.chartInstance.data.labels = labels
-                this.chartInstance.data.datasets[0].data = data
-                this.chartInstance.data.datasets[0].label = label
-                this.chartInstance.options.scales.y.title.text = label
-                this.chartInstance.update('none')
+            if (this.chart) {
+                this.chart.config.data.labels = labels
+                this.chart.config.data.datasets[0].data = data
+                this.chart.config.data.datasets[0].label = label
+                this.chart.config.options.scales.yAxes[0].scaleLabel.labelString = label
+                this.chart.update()
                 return
             }
 
-            this.chartInstance = new window.Chart(this.$refs.chart, {
+            this.chart = new Chart(this.$refs.chart, {
                 type: 'bar',
                 data: {
                     labels,
@@ -177,20 +167,20 @@ export default {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false }
-                    },
+                    animation: { duration: 0 },
+                    responsiveAnimationDuration: 0,
+                    legend: { display: false },
                     scales: {
-                        x: {
+                        xAxes: [{
                             ticks: {
                                 maxRotation: 45,
                                 maxTicksLimit: 15,
                             }
-                        },
-                        y: {
-                            beginAtZero: true,
-                            title: { display: true, text: label }
-                        }
+                        }],
+                        yAxes: [{
+                            ticks: { beginAtZero: true },
+                            scaleLabel: { display: true, labelString: label }
+                        }]
                     }
                 }
             })

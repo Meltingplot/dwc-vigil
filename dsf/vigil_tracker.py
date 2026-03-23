@@ -116,7 +116,6 @@ class VigilTracker:
         state = getattr(model, "state", None)
         status = getattr(state, "status", None) if state is not None else None
         if status is not None:
-            status = str(status)
             self._update_time_counters(status, dt)
             self._update_job_tracking(status, model)
             self._prev_status = status
@@ -197,7 +196,8 @@ class VigilTracker:
             homed = getattr(axis, "homed", False)
             if letter is None or pos is None:
                 continue
-            letter = str(letter)
+            # AxisLetter is a str enum — use directly, don't wrap with str()
+            # str(AxisLetter.X) gives "AxisLetter.X", not "X"
 
             was_homed = self._prev_axis_homed.get(letter, False)
             self._prev_axis_homed[letter] = homed
@@ -271,7 +271,9 @@ class VigilTracker:
             state = getattr(heater, "state", None)
             key = str(i)
 
-            if state is not None and str(state) != "off":
+            # HeaterState is a str enum: compare with value, not str()
+            # which produces "HeaterState.off" instead of "off"
+            if state is not None and state != "off":
                 self._add_heater(key, "on_seconds", dt)
 
                 # Full load: check average PWM duty cycle
@@ -344,7 +346,7 @@ class VigilTracker:
 
             avg_load = getattr(cpu, "avg_load", None)
             if avg_load is not None:
-                vitals["sbc_cpu_load_avg_sum"] += avg_load
+                vitals["sbc_cpu_load_avg_sum"] += max(0.0, min(1.0, avg_load))
                 vitals["sbc_cpu_load_avg_count"] += 1
 
         memory = getattr(sbc, "memory", None)

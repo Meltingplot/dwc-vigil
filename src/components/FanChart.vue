@@ -11,13 +11,15 @@
 </template>
 
 <script>
+import Chart from 'chart.js'
+
 export default {
     name: 'FanChart',
     props: {
         fans: { type: Object, default: () => ({}) },
     },
     data() {
-        return { chartInstance: null, lastDataJson: '' }
+        return { chart: null }
     },
     computed: {
         hasData() { return Object.keys(this.fans).length > 0 }
@@ -25,50 +27,31 @@ export default {
     watch: {
         fans: {
             deep: true,
-            handler() {
-                const json = JSON.stringify(this.fans)
-                if (json === this.lastDataJson) return
-                this.renderChart()
-            }
+            handler() { this.renderChart() }
         }
     },
     mounted() {
-        this.loadChartJs()
+        this.renderChart()
     },
     beforeDestroy() {
-        if (this.chartInstance) this.chartInstance.destroy()
+        if (this.chart) this.chart.destroy()
     },
     methods: {
-        async loadChartJs() {
-            if (typeof window.Chart === 'undefined') {
-                try {
-                    await import('chart.js/auto')
-                } catch {
-                    return
-                }
-            }
-            this.renderChart()
-        },
         renderChart() {
-            if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
+            if (!this.$refs.chart || !this.hasData) return
 
             const labels = Object.keys(this.fans).map(k => `Fan ${k}`)
             const onHours = Object.values(this.fans).map(f => (f.on_seconds || 0) / 3600)
 
-            // Update in-place to avoid animation replay on poll
-            if (this.chartInstance) {
-                const currentLabels = this.chartInstance.data.labels
-                if (currentLabels.length === labels.length && currentLabels.every((l, i) => l === labels[i])) {
-                    this.chartInstance.data.datasets[0].data = onHours
-                    this.chartInstance.update('none')
-                    this.lastDataJson = JSON.stringify(this.fans)
-                    return
-                }
-                this.chartInstance.destroy()
+            if (this.chart) {
+                this.chart.config.data.labels = labels
+                this.chart.config.data.datasets[0].data = onHours
+                this.chart.update()
+                return
             }
 
-            this.chartInstance = new window.Chart(this.$refs.chart, {
-                type: 'bar',
+            this.chart = new Chart(this.$refs.chart, {
+                type: 'horizontalBar',
                 data: {
                     labels,
                     datasets: [{
@@ -80,16 +63,16 @@ export default {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    indexAxis: 'y',
-                    plugins: {
-                        legend: { position: 'bottom' }
-                    },
+                    animation: { duration: 0 },
+                    responsiveAnimationDuration: 0,
+                    legend: { position: 'bottom' },
                     scales: {
-                        x: { title: { display: true, text: 'Hours' } }
+                        xAxes: [{
+                            scaleLabel: { display: true, labelString: 'Hours' }
+                        }]
                     }
                 }
             })
-            this.lastDataJson = JSON.stringify(this.fans)
         }
     }
 }
