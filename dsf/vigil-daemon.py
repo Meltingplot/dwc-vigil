@@ -60,8 +60,8 @@ try:
 except ImportError:
     pass
 
-from dsf.connections import CommandConnection, SubscribeConnection
-from dsf.object_model import SubscriptionMode, HttpEndpointType
+from dsf.connections import CommandConnection, SubscribeConnection, SubscriptionMode
+from dsf.object_model import HttpEndpointType
 from dsf.http import HttpEndpointConnection, HttpResponseType
 
 from vigil_tracker import VigilTracker
