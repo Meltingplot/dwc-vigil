@@ -2,8 +2,8 @@
   <v-card outlined>
     <v-card-title class="text-subtitle-1">Fan Usage</v-card-title>
     <v-card-text>
-      <Bar v-if="hasData" :data="chartData" :options="chartOptions" />
-      <div v-else class="text-center grey--text py-8">
+      <canvas ref="chart" height="200" />
+      <div v-if="!hasData" class="text-center grey--text py-8">
         No fan data yet
       </div>
     </v-card-text>
@@ -11,43 +11,68 @@
 </template>
 
 <script>
-import { Bar } from 'vue-chartjs'
-import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
-
-ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
+import Chart from 'chart.js'
 
 export default {
     name: 'FanChart',
-    components: { Bar },
     props: {
         fans: { type: Object, default: () => ({}) },
     },
+    data() {
+        return { chart: null }
+    },
     computed: {
-        hasData() { return Object.keys(this.fans).length > 0 },
-        chartData() {
+        hasData() { return Object.keys(this.fans).length > 0 }
+    },
+    watch: {
+        fans: {
+            deep: true,
+            handler() { this.renderChart() }
+        }
+    },
+    mounted() {
+        this.renderChart()
+    },
+    beforeDestroy() {
+        if (this.chart) this.chart.destroy()
+    },
+    methods: {
+        renderChart() {
+            if (!this.$refs.chart || !this.hasData) return
+
             const labels = Object.keys(this.fans).map(k => `Fan ${k}`)
-            return {
-                labels,
-                datasets: [{
-                    label: 'On Time (h)',
-                    data: Object.values(this.fans).map(f => (f.on_seconds || 0) / 3600),
-                    backgroundColor: '#009688',
-                }]
+            const onHours = Object.values(this.fans).map(f => (f.on_seconds || 0) / 3600)
+
+            if (this.chart) {
+                this.chart.config.data.labels = labels
+                this.chart.config.data.datasets[0].data = onHours
+                this.chart.update()
+                return
             }
-        },
-        chartOptions() {
-            return {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: 'y',
-                animation: false,
-                plugins: {
-                    legend: { position: 'bottom' }
+
+            this.chart = new Chart(this.$refs.chart, {
+                type: 'horizontalBar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'On Time (h)',
+                        data: onHours,
+                        backgroundColor: '#009688',
+                    }]
                 },
-                scales: {
-                    x: { title: { display: true, text: 'Hours' } }
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    responsiveAnimationDuration: 0,
+                    legend: { position: 'bottom' },
+                    scales: {
+                        xAxes: [{
+                            scaleLabel: { display: true, labelString: 'Hours' }
+                        }]
+                    }
                 }
-            }
+            })
         }
     }
 }

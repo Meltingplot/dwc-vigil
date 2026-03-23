@@ -2,8 +2,8 @@
   <v-card outlined>
     <v-card-title class="text-subtitle-1">Heater Usage</v-card-title>
     <v-card-text>
-      <Bar v-if="hasData" :data="chartData" :options="chartOptions" />
-      <div v-else class="text-center grey--text py-8">
+      <canvas ref="chart" height="200" />
+      <div v-if="!hasData" class="text-center grey--text py-8">
         No heater data yet
       </div>
     </v-card-text>
@@ -11,50 +11,77 @@
 </template>
 
 <script>
-import { Bar } from 'vue-chartjs'
-import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
-
-ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
+import Chart from 'chart.js'
 
 export default {
     name: 'HeaterChart',
-    components: { Bar },
     props: {
         heaters: { type: Object, default: () => ({}) },
     },
+    data() {
+        return { chart: null }
+    },
     computed: {
-        hasData() { return Object.keys(this.heaters).length > 0 },
-        chartData() {
+        hasData() { return Object.keys(this.heaters).length > 0 }
+    },
+    watch: {
+        heaters: {
+            deep: true,
+            handler() { this.renderChart() }
+        }
+    },
+    mounted() {
+        this.renderChart()
+    },
+    beforeDestroy() {
+        if (this.chart) this.chart.destroy()
+    },
+    methods: {
+        renderChart() {
+            if (!this.$refs.chart || !this.hasData) return
+
             const labels = Object.keys(this.heaters).map(k => `Heater ${k}`)
-            return {
-                labels,
-                datasets: [
-                    {
-                        label: 'On Time (h)',
-                        data: Object.values(this.heaters).map(h => (h.on_seconds || 0) / 3600),
-                        backgroundColor: '#2196F3',
-                    },
-                    {
-                        label: 'Full Load (h)',
-                        data: Object.values(this.heaters).map(h => (h.full_load_seconds || 0) / 3600),
-                        backgroundColor: '#FF9800',
-                    }
-                ]
+            const onHours = Object.values(this.heaters).map(h => (h.on_seconds || 0) / 3600)
+            const fullLoadHours = Object.values(this.heaters).map(h => (h.full_load_seconds || 0) / 3600)
+
+            if (this.chart) {
+                this.chart.config.data.labels = labels
+                this.chart.config.data.datasets[0].data = onHours
+                this.chart.config.data.datasets[1].data = fullLoadHours
+                this.chart.update()
+                return
             }
-        },
-        chartOptions() {
-            return {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: 'y',
-                animation: false,
-                plugins: {
-                    legend: { position: 'bottom' }
+
+            this.chart = new Chart(this.$refs.chart, {
+                type: 'horizontalBar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'On Time (h)',
+                            data: onHours,
+                            backgroundColor: '#2196F3',
+                        },
+                        {
+                            label: 'Full Load (h)',
+                            data: fullLoadHours,
+                            backgroundColor: '#FF9800',
+                        }
+                    ]
                 },
-                scales: {
-                    x: { title: { display: true, text: 'Hours' } }
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    responsiveAnimationDuration: 0,
+                    legend: { position: 'bottom' },
+                    scales: {
+                        xAxes: [{
+                            scaleLabel: { display: true, labelString: 'Hours' }
+                        }]
+                    }
                 }
-            }
+            })
         }
     }
 }
