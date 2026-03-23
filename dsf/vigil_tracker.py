@@ -60,6 +60,14 @@ class VigilTracker:
             }
         if "volume_free_bytes" not in self._data:
             self._data["volume_free_bytes"] = None
+        # Migrate sbc_cpu_load_avg from 0..100 scale to 0..1 fraction.
+        # Old code stored raw DSF values (0-100); divide sum by 100 to fix.
+        vitals = self._data.get("vitals", {})
+        cpu_sum = vitals.get("sbc_cpu_load_avg_sum", 0)
+        cpu_count = vitals.get("sbc_cpu_load_avg_count", 0)
+        if cpu_count > 0 and cpu_sum / cpu_count > 1.0:
+            vitals["sbc_cpu_load_avg_sum"] = cpu_sum / 100.0
+
         # Ensure new counter fields exist in lifetime/service tiers
         for tier in [self._data["lifetime"], self._data["service"]]:
             tier.setdefault("pause_seconds", 0.0)

@@ -1214,3 +1214,23 @@ class TestSchemaMigration:
         assert tracker._data["lifetime"]["pause_seconds"] == 0.0
         assert tracker._data["lifetime"]["fans"] == {}
         assert tracker._data["service"]["warmup_seconds"] == 0.0
+
+    def test_cpu_load_avg_migrated_from_0_100_scale(self):
+        """Existing data with sbc_cpu_load_avg_sum in 0-100 scale gets divided by 100."""
+        old_data = empty_state()
+        old_data["vitals"]["sbc_cpu_load_avg_sum"] = 326251
+        old_data["vitals"]["sbc_cpu_load_avg_count"] = 31762
+        tracker = VigilTracker(old_data)
+        vitals = tracker._data["vitals"]
+        avg = vitals["sbc_cpu_load_avg_sum"] / vitals["sbc_cpu_load_avg_count"]
+        assert avg < 1.0
+        assert abs(avg - 326251 / 31762 / 100) < 0.001
+
+    def test_cpu_load_avg_already_correct_not_migrated(self):
+        """Data already in 0-1 scale should not be divided again."""
+        old_data = empty_state()
+        old_data["vitals"]["sbc_cpu_load_avg_sum"] = 0.4
+        old_data["vitals"]["sbc_cpu_load_avg_count"] = 2
+        tracker = VigilTracker(old_data)
+        vitals = tracker._data["vitals"]
+        assert abs(vitals["sbc_cpu_load_avg_sum"] - 0.4) < 0.001
