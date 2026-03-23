@@ -116,7 +116,6 @@ class VigilTracker:
         state = getattr(model, "state", None)
         status = getattr(state, "status", None) if state is not None else None
         if status is not None:
-            status = str(status)
             self._update_time_counters(status, dt)
             self._update_job_tracking(status, model)
             self._prev_status = status
@@ -271,7 +270,9 @@ class VigilTracker:
             state = getattr(heater, "state", None)
             key = str(i)
 
-            if state is not None and str(state) != "off":
+            # HeaterState is a str enum: compare with value, not str()
+            # which produces "HeaterState.off" instead of "off"
+            if state is not None and state != "off":
                 self._add_heater(key, "on_seconds", dt)
 
                 # Full load: check average PWM duty cycle
