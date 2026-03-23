@@ -466,5 +466,6 @@ git clone --branch v3.6-dev --depth 1 https://github.com/Duet3D/DuetWebControl.g
 | Vue 2 reactivity for new keys | Use `this.$set()` |
 | `SubscribeConnection()` missing args | Constructor requires `subscription_mode`; filter goes in `filter_str`/`filter_list`, NOT `connect()` |
 | `get_object_model()` in PATCH loop | First call: `get_object_model()` for full model. Loop: `get_object_model_patch()` for JSON patches |
-| `SubscribeConnection` 3s timeout | Set `sub.timeout = 0` before `connect()` — PATCH mode only sends data on changes, default 3s timeout causes spurious errors |
+| `SubscribeConnection` `filter_str` is obsolete | Use `filter_list=["state/status", ...]` (a Python list), not `filter_str` with pipe-delimited strings |
+| `SubscribeConnection` 3s timeout | Catch `TimeoutError` gracefully — the default timeout acts as a loop heartbeat for periodic saves and shutdown checks |
 | Guessing API signatures | **Never guess** — clone dsf-python v3.6 and read the actual source before using any API |

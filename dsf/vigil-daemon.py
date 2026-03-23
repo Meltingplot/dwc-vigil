@@ -156,15 +156,15 @@ def register_endpoints(cmd, tracker):
     return registered
 
 
-def _subscribe_filter():
-    """Return the Object Model filter for SubscribeConnection."""
-    return (
-        "state/status|"
-        "move/axes[]/letter,machinePosition|"
-        "move/extruders[]/position|"
-        "heat/heaters[]/state,current|"
-        "job/file/fileName"
-    )
+def _subscribe_filters():
+    """Return the Object Model filter list for SubscribeConnection."""
+    return [
+        "state/status",
+        "move/axes[]/letter,machinePosition",
+        "move/extruders[]/position",
+        "heat/heaters[]/state,current",
+        "job/file/fileName",
+    ]
 
 
 def _object_model_to_dict(model) -> dict:
@@ -249,10 +249,7 @@ def main():
     update_plugin_data(cmd, tracker)
 
     # SubscribeConnection for Object Model updates
-    # timeout=0 makes receive_json() block indefinitely; in PATCH mode DSF only
-    # sends data when the model actually changes, which can exceed the 3s default.
-    sub = SubscribeConnection(SubscriptionMode.PATCH, filter_str=_subscribe_filter())
-    sub.timeout = 0
+    sub = SubscribeConnection(SubscriptionMode.PATCH, filter_list=_subscribe_filters())
     sub.connect()
 
     # First call must be get_object_model() to receive the full initial model
@@ -267,10 +264,14 @@ def main():
     try:
         while not _shutdown:
             try:
-                # Receive Object Model patch (JSON string, ~250ms cycle)
+                # Receive Object Model patch (JSON string, ~250ms cycle).
+                # TimeoutError is expected when idle — the default 3s timeout
+                # acts as a loop heartbeat for periodic saves and shutdown checks.
                 patch_json = sub.get_object_model_patch()
                 model_dict = json.loads(patch_json)
                 tracker.update(model_dict)
+            except TimeoutError:
+                pass
             except Exception as e:
                 if _shutdown:
                     break
