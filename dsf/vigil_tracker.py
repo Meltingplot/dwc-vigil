@@ -196,7 +196,8 @@ class VigilTracker:
             homed = getattr(axis, "homed", False)
             if letter is None or pos is None:
                 continue
-            letter = str(letter)
+            # AxisLetter is a str enum — use directly, don't wrap with str()
+            # str(AxisLetter.X) gives "AxisLetter.X", not "X"
 
             was_homed = self._prev_axis_homed.get(letter, False)
             self._prev_axis_homed[letter] = homed
