@@ -264,7 +264,7 @@ def load_data(filepath: str | None = None) -> dict:
     if main_raw is not None:
         data = _parse_json_checked(main_raw)
         if data is not None:
-            logger.info("Loaded data from main file")
+            logger.debug("Loaded data from main file")
             return _strip_checksum(data)
 
     # Stage 2: Backup OK
