@@ -12,6 +12,7 @@ str, so plain string comparisons work.
 
 import copy
 import logging
+import time
 from datetime import date
 
 from vigil_persistence import (
@@ -39,6 +40,8 @@ class VigilTracker:
 
         # Previous values for delta calculations
         self._prev_axis_pos = {}      # axis_name → position
+        self._prev_axis_homed = {}    # axis_name → bool
+        self._axis_homed_at = {}      # axis_name → monotonic timestamp of False→True
         self._prev_extruder_pos = {}  # extruder_index → position
         self._prev_status = None
         self._prev_job_file = None
@@ -118,7 +121,7 @@ class VigilTracker:
             self._update_job_tracking(status, model)
             self._prev_status = status
 
-        self._update_axis_travel(model, dt)
+        self._update_axis_travel(model)
         self._update_extruder_travel(model)
         self._update_heaters(model, dt)
         self._update_fans(model, dt)
@@ -168,13 +171,16 @@ class VigilTracker:
 
         self._prev_job_file = job_file
 
-    def _update_axis_travel(self, model, dt):
+    HOMING_GRACE_SECS = 10.0
+
+    def _update_axis_travel(self, model):
         """Track axis travel distances. Only tracks homed axes to avoid
         false deltas from homing moves resetting positions.
 
-        Uses a speed-based sanity check to reject position jumps caused by
-        re-homing an already-homed axis (the PATCH subscription can miss the
-        brief intermediate homed=False state).
+        After an unhomed→homed transition a 10s grace period suppresses
+        tracking.  This covers multi-tap homing sequences (first tap homes,
+        rewinds, second slower tap re-homes) where the PATCH subscription
+        may also miss the brief intermediate homed=False blip.
         """
         move = getattr(model, "move", None)
         if move is None:
@@ -182,6 +188,8 @@ class VigilTracker:
         axes = getattr(move, "axes", None)
         if axes is None:
             return
+
+        now = time.monotonic()
 
         for axis in axes:
             letter = getattr(axis, "letter", None)
@@ -191,19 +199,30 @@ class VigilTracker:
                 continue
             letter = str(letter)
 
+            was_homed = self._prev_axis_homed.get(letter, False)
+            self._prev_axis_homed[letter] = homed
+
             if not homed:
                 # Clear previous position so we don't get a false delta
                 # when the axis becomes homed
                 self._prev_axis_pos.pop(letter, None)
                 continue
 
+            # Detect unhomed→homed transition (or first time seen as homed)
+            if not was_homed:
+                self._axis_homed_at[letter] = now
+                self._prev_axis_pos.pop(letter, None)
+                continue
+
+            # Inside grace period after homing — don't track yet
+            homed_at = self._axis_homed_at.get(letter)
+            if homed_at is not None and (now - homed_at) < self.HOMING_GRACE_SECS:
+                self._prev_axis_pos[letter] = pos
+                continue
+
             if letter in self._prev_axis_pos:
                 delta = abs(pos - self._prev_axis_pos[letter])
-                # Reject deltas that exceed what the axis could physically
-                # travel in one tick — these are position resets from homing.
-                max_speed = getattr(axis, "speed", 500)  # mm/s
-                max_delta = max_speed * dt * 3.0  # generous margin
-                if delta > 0 and delta <= max_delta:
+                if delta > 0 and delta < 100000:
                     self._add_keyed("axes", letter, delta)
 
             self._prev_axis_pos[letter] = pos
