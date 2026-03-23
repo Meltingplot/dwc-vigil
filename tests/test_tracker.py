@@ -5,7 +5,9 @@ structure (snake_case attributes accessed via getattr).
 """
 
 import copy
+import time
 from types import SimpleNamespace as NS
+from unittest.mock import patch
 
 import pytest
 
@@ -41,10 +43,8 @@ def _axes(*args):
     or (letter, machine_position, homed).  Defaults to homed=True."""
     axis_list = []
     for a in args:
-        if len(a) == 3:
-            axis_list.append(NS(letter=a[0], machine_position=a[1], homed=a[2]))
-        else:
-            axis_list.append(NS(letter=a[0], machine_position=a[1], homed=True))
+        homed = a[2] if len(a) >= 3 else True
+        axis_list.append(NS(letter=a[0], machine_position=a[1], homed=homed))
     return NS(axes=axis_list, extruders=[])
 
 
@@ -117,21 +117,39 @@ class TestCounters:
 
 class TestAxisTracking:
     def test_axis_travel(self, tracker):
-        tracker._timer.reset()
-        tracker.update(_model(move=_axes(("X", 0))))
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            tracker.update(_model(move=_axes(("X", 0))))
 
-        tracker._timer._last_tick -= 0.25
-        tracker.update(_model(move=_axes(("X", 100))))
+            # Advance past homing grace period
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 0))))
+
+            mock_time.monotonic.return_value = t + 11.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 100))))
 
         status = tracker.get_status()
         assert status["lifetime"]["axes"]["X"] == 100.0
 
     def test_dynamic_axis_detection(self, tracker):
-        tracker._timer.reset()
-        tracker.update(_model(move=_axes(("X", 0), ("Y", 0), ("Z", 0))))
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            tracker.update(_model(move=_axes(("X", 0), ("Y", 0), ("Z", 0))))
 
-        tracker._timer._last_tick -= 0.25
-        tracker.update(_model(move=_axes(("X", 50), ("Y", 30), ("Z", 10))))
+            # Advance past homing grace period
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 0), ("Y", 0), ("Z", 0))))
+
+            mock_time.monotonic.return_value = t + 11.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 50), ("Y", 30), ("Z", 10))))
 
         status = tracker.get_status()
         assert "X" in status["lifetime"]["axes"]
@@ -149,11 +167,23 @@ class TestAxisHomedFiltering:
         status = tracker.get_status()
         assert "X" not in status["lifetime"]["axes"]
 
-    def test_homed_axis_tracked(self, tracker):
-        tracker._timer.reset()
-        tracker.update(_model(move=_axes(("X", 0, True))))
-        tracker._timer._last_tick -= 0.25
-        tracker.update(_model(move=_axes(("X", 100, True))))
+    def test_homed_axis_tracked_after_grace(self, tracker):
+        """Homed axis is tracked once the 10s grace period expires."""
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            # First seen as homed — starts grace period
+            tracker.update(_model(move=_axes(("X", 0, True))))
+
+            # Advance past the 10s grace period
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 0, True))))
+
+            mock_time.monotonic.return_value = t + 11.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 100, True))))
 
         status = tracker.get_status()
         assert status["lifetime"]["axes"]["X"] == 100.0
@@ -161,27 +191,150 @@ class TestAxisHomedFiltering:
     def test_axis_becoming_homed_no_false_delta(self, tracker):
         """When axis transitions from unhomed to homed, the position
         jump from homing should not be counted as travel."""
-        tracker._timer.reset()
-        # Unhomed at position 500 (arbitrary pre-homing position)
-        tracker.update(_model(move=_axes(("X", 500, False))))
-        tracker._timer._last_tick -= 0.25
-        # Now homed, position reset to 0 — no delta should be recorded
-        tracker.update(_model(move=_axes(("X", 0, True))))
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            tracker.update(_model(move=_axes(("X", 500, False))))
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 0, True))))
+
+            # Even after grace period — the homing jump itself is not counted
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 0, True))))
 
         status = tracker.get_status()
         assert "X" not in status["lifetime"]["axes"]
 
     def test_mixed_homed_unhomed(self, tracker):
         """Only homed axes get tracked in a multi-axis setup."""
-        tracker._timer.reset()
-        tracker.update(_model(move=_axes(("X", 0, True), ("Y", 0, False), ("Z", 0, True))))
-        tracker._timer._last_tick -= 0.25
-        tracker.update(_model(move=_axes(("X", 50, True), ("Y", 100, False), ("Z", 10, True))))
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            tracker.update(_model(move=_axes(("X", 0, True), ("Y", 0, False), ("Z", 0, True))))
+
+            # Advance past grace period
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 0, True), ("Y", 0, False), ("Z", 0, True))))
+
+            mock_time.monotonic.return_value = t + 11.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 50, True), ("Y", 100, False), ("Z", 10, True))))
 
         status = tracker.get_status()
         assert status["lifetime"]["axes"]["X"] == 50.0
         assert "Y" not in status["lifetime"]["axes"]
         assert status["lifetime"]["axes"]["Z"] == 10.0
+
+    def test_grace_period_suppresses_homing_travel(self, tracker):
+        """During the 10s grace period after homing, travel is not counted.
+        This covers multi-tap homing (home, rewind, re-home slower)."""
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            # Axis unhomed
+            tracker.update(_model(move=_axes(("X", 0, False))))
+
+            # First tap: homed at 880
+            mock_time.monotonic.return_value = t + 1
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 880, True))))
+
+            # Rewind during homing (still within grace)
+            mock_time.monotonic.return_value = t + 3
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 870, True))))
+
+            # Second tap re-homes at 878
+            mock_time.monotonic.return_value = t + 5
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 878, True))))
+
+        status = tracker.get_status()
+        assert "X" not in status["lifetime"]["axes"]
+
+    def test_rehoming_already_homed_axis_not_tracked(self, tracker):
+        """When re-homing an already-homed axis, the unhomed→homed
+        transition triggers a new grace period that suppresses travel."""
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            tracker.update(_model(move=_axes(("X", 100, True))))
+
+            # Past grace period, normal move tracked
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 100, True))))
+            mock_time.monotonic.return_value = t + 11.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 120, True))))
+
+            # Re-homing: axis goes unhomed then homed at 880
+            mock_time.monotonic.return_value = t + 20
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 120, False))))
+            mock_time.monotonic.return_value = t + 22
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 880, True))))
+
+            # Still in grace period — not tracked
+            mock_time.monotonic.return_value = t + 25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 870, True))))
+
+        status = tracker.get_status()
+        # Only the 20mm from the normal move should be tracked
+        assert status["lifetime"]["axes"]["X"] == 20.0
+
+    def test_homed_to_unhomed_starts_grace_period(self, tracker):
+        """When a homed axis becomes unhomed (e.g. G28 starts), the
+        homed→unhomed transition starts a grace period so that when the
+        axis becomes homed again the grace is already running."""
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            tracker.update(_model(move=_axes(("X", 100, True))))
+
+            # Past initial grace, normal move
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 100, True))))
+            mock_time.monotonic.return_value = t + 11.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 120, True))))
+
+            # Axis becomes unhomed — grace starts at t+20
+            mock_time.monotonic.return_value = t + 20
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 120, False))))
+
+            # Axis becomes homed again at t+22 — grace restarts
+            mock_time.monotonic.return_value = t + 22
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 880, True))))
+
+            # t+29 is within 10s of the t+22 unhomed→homed transition
+            mock_time.monotonic.return_value = t + 29
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 870, True))))
+
+            # t+33 is past the grace period (>10s from t+22)
+            mock_time.monotonic.return_value = t + 33
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 870, True))))
+            mock_time.monotonic.return_value = t + 33.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 850, True))))
+
+        status = tracker.get_status()
+        # 20mm pre-homing + 20mm post-grace = 40mm
+        assert status["lifetime"]["axes"]["X"] == 40.0
 
 
 class TestExtruderTracking:

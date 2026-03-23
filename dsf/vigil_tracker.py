@@ -12,6 +12,7 @@ str, so plain string comparisons work.
 
 import copy
 import logging
+import time
 from datetime import date
 
 from vigil_persistence import (
@@ -39,6 +40,8 @@ class VigilTracker:
 
         # Previous values for delta calculations
         self._prev_axis_pos = {}      # axis_name → position
+        self._prev_axis_homed = {}    # axis_name → bool
+        self._axis_homed_at = {}      # axis_name → monotonic timestamp of False→True
         self._prev_extruder_pos = {}  # extruder_index → position
         self._prev_status = None
         self._prev_job_file = None
@@ -168,15 +171,25 @@ class VigilTracker:
 
         self._prev_job_file = job_file
 
+    HOMING_GRACE_SECS = 10.0
+
     def _update_axis_travel(self, model):
         """Track axis travel distances. Only tracks homed axes to avoid
-        false deltas from homing moves resetting positions."""
+        false deltas from homing moves resetting positions.
+
+        Any homed state change (unhomed→homed OR homed→unhomed) starts a
+        10s grace period that suppresses tracking.  This covers multi-tap
+        homing sequences and the moves leading into/out of homing where
+        the PATCH subscription may miss brief intermediate state changes.
+        """
         move = getattr(model, "move", None)
         if move is None:
             return
         axes = getattr(move, "axes", None)
         if axes is None:
             return
+
+        now = time.monotonic()
 
         for axis in axes:
             letter = getattr(axis, "letter", None)
@@ -186,15 +199,32 @@ class VigilTracker:
                 continue
             letter = str(letter)
 
-            if not homed:
-                # Clear previous position so we don't get a false delta
-                # when the axis becomes homed
+            was_homed = self._prev_axis_homed.get(letter, False)
+            self._prev_axis_homed[letter] = homed
+
+            # Any homed state change starts/restarts the grace period
+            if homed != was_homed:
+                self._axis_homed_at[letter] = now
                 self._prev_axis_pos.pop(letter, None)
+                if not homed:
+                    continue
+                # unhomed→homed: skip this tick (grace period will
+                # suppress subsequent ticks too)
+                continue
+
+            if not homed:
+                self._prev_axis_pos.pop(letter, None)
+                continue
+
+            # Inside grace period after homing — don't track yet
+            homed_at = self._axis_homed_at.get(letter)
+            if homed_at is not None and (now - homed_at) < self.HOMING_GRACE_SECS:
+                self._prev_axis_pos[letter] = pos
                 continue
 
             if letter in self._prev_axis_pos:
                 delta = abs(pos - self._prev_axis_pos[letter])
-                if delta > 0 and delta < 100000:  # Sanity check: < 100m per tick
+                if delta > 0 and delta < 100000:
                     self._add_keyed("axes", letter, delta)
 
             self._prev_axis_pos[letter] = pos
