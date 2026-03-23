@@ -85,7 +85,7 @@ export default {
         sbcCpuLoadAvg() {
             const count = this.vitals.sbc_cpu_load_avg_count
             if (!count || count === 0) return null
-            return (this.vitals.sbc_cpu_load_avg_sum / count * 100).toFixed(1)
+            return Math.min(100, Math.max(0, this.vitals.sbc_cpu_load_avg_sum / count * 100)).toFixed(1)
         },
         hasData() {
             return this.hasMcuTemp || this.hasVin || this.hasV12

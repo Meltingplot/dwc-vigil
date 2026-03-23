@@ -346,7 +346,7 @@ class VigilTracker:
 
             avg_load = getattr(cpu, "avg_load", None)
             if avg_load is not None:
-                vitals["sbc_cpu_load_avg_sum"] += avg_load
+                vitals["sbc_cpu_load_avg_sum"] += max(0.0, min(1.0, avg_load))
                 vitals["sbc_cpu_load_avg_count"] += 1
 
         memory = getattr(sbc, "memory", None)
