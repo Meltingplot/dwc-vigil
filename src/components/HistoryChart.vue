@@ -82,6 +82,7 @@ export default {
                 { text: 'Disk Free (MB)', value: 'volume_free_mb' },
             ],
             chartInstance: null,
+            lastDaysJson: '',
         }
     },
     computed: {
@@ -120,7 +121,12 @@ export default {
         },
     },
     watch: {
-        days() { this.renderChart() },
+        days() {
+            const json = JSON.stringify(this.days)
+            if (json === this.lastDaysJson) return
+            this.lastDaysJson = json
+            this.renderChart()
+        },
         metric() {
             // Auto-select first subKey for dict metrics
             if (this.isDictMetric && this.subKeys.length > 0 && !this.subKeys.includes(this.subKey)) {

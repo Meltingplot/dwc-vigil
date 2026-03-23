@@ -18,14 +18,14 @@ export default {
         cancelled: { type: Number, default: 0 },
     },
     data() {
-        return { chartInstance: null }
+        return { chartInstance: null, lastSuccessful: -1, lastCancelled: -1 }
     },
     computed: {
         hasData() { return this.successful > 0 || this.cancelled > 0 }
     },
     watch: {
-        successful() { this.renderChart() },
-        cancelled() { this.renderChart() },
+        successful() { this.renderIfChanged() },
+        cancelled() { this.renderIfChanged() },
     },
     mounted() {
         this.loadChartJs()
@@ -46,6 +46,10 @@ export default {
             }
             this.renderChart()
         },
+        renderIfChanged() {
+            if (this.successful === this.lastSuccessful && this.cancelled === this.lastCancelled) return
+            this.renderChart()
+        },
         renderChart() {
             if (!this.$refs.chart || !this.hasData || typeof window.Chart === 'undefined') return
 
@@ -53,6 +57,8 @@ export default {
             if (this.chartInstance) {
                 this.chartInstance.data.datasets[0].data = [this.successful, this.cancelled]
                 this.chartInstance.update('none')
+                this.lastSuccessful = this.successful
+                this.lastCancelled = this.cancelled
                 return
             }
 
@@ -73,6 +79,8 @@ export default {
                     }
                 }
             })
+            this.lastSuccessful = this.successful
+            this.lastCancelled = this.cancelled
         }
     }
 }
