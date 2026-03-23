@@ -156,70 +156,9 @@ def register_endpoints(cmd, tracker):
     return registered
 
 
-def _subscribe_filters():
-    """Return the Object Model filter list for SubscribeConnection."""
-    return [
-        "state/status",
-        "move/axes[]/letter,machinePosition",
-        "move/extruders[]/position",
-        "heat/heaters[]/state,current",
-        "job/file/fileName",
-    ]
-
-
 def _object_model_to_dict(model) -> dict:
-    """Convert a dsf-python object model (or patch) to a plain dict."""
-    if isinstance(model, dict):
-        return model
-    try:
-        return json.loads(model.to_json())
-    except Exception:
-        pass
-    # Fallback: manually extract what we need
-    result = {}
-    try:
-        state = getattr(model, "state", None)
-        if state:
-            result["state"] = {"status": getattr(state, "status", None)}
-    except Exception:
-        pass
-    try:
-        move = getattr(model, "move", None)
-        if move:
-            axes_list = []
-            for ax in (getattr(move, "axes", None) or []):
-                axes_list.append({
-                    "letter": getattr(ax, "letter", None),
-                    "machinePosition": getattr(ax, "machine_position", None),
-                })
-            extruders_list = []
-            for ext in (getattr(move, "extruders", None) or []):
-                extruders_list.append({
-                    "position": getattr(ext, "position", None),
-                })
-            result["move"] = {"axes": axes_list, "extruders": extruders_list}
-    except Exception:
-        pass
-    try:
-        heat = getattr(model, "heat", None)
-        if heat:
-            heaters_list = []
-            for h in (getattr(heat, "heaters", None) or []):
-                heaters_list.append({
-                    "state": getattr(h, "state", None),
-                    "current": getattr(h, "current", None),
-                })
-            result["heat"] = {"heaters": heaters_list}
-    except Exception:
-        pass
-    try:
-        job = getattr(model, "job", None)
-        if job:
-            jf = getattr(job, "file", None)
-            result["job"] = {"file": {"fileName": getattr(jf, "file_name", None) if jf else None}}
-    except Exception:
-        pass
-    return result
+    """Convert a dsf-python ObjectModel to a plain dict via its JSON serialisation."""
+    return json.loads(model.to_json())
 
 
 def main():
@@ -249,7 +188,7 @@ def main():
     update_plugin_data(cmd, tracker)
 
     # SubscribeConnection for Object Model updates
-    sub = SubscribeConnection(SubscriptionMode.PATCH, filter_list=_subscribe_filters())
+    sub = SubscribeConnection(SubscriptionMode.PATCH)
     sub.connect()
 
     # First call must be get_object_model() to receive the full initial model
