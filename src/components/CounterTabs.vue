@@ -1,9 +1,20 @@
 <template>
-  <v-tabs v-model="internalTab" background-color="transparent" grow>
-    <v-tab>Lifetime</v-tab>
-    <v-tab>Ab Service</v-tab>
-    <v-tab>Session</v-tab>
-  </v-tabs>
+  <v-card class="vigil-card" style="border-radius: 8px">
+    <v-tabs v-model="internalTab" background-color="transparent" grow slider-size="3">
+      <v-tab>
+        <v-icon left small>mdi-infinity</v-icon>
+        Lifetime
+      </v-tab>
+      <v-tab>
+        <v-icon left small>mdi-wrench-outline</v-icon>
+        Since Service
+      </v-tab>
+      <v-tab>
+        <v-icon left small>mdi-clock-outline</v-icon>
+        Session
+      </v-tab>
+    </v-tabs>
+  </v-card>
 </template>
 
 <script>

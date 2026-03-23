@@ -1,8 +1,11 @@
 <template>
-  <v-card outlined>
-    <v-card-title class="text-subtitle-1">Axis Travel</v-card-title>
+  <v-card style="border-radius: 8px; height: 100%">
+    <v-card-title class="text-subtitle-2 pb-0">
+      <v-icon small color="purple" class="mr-2">mdi-axis-arrow</v-icon>
+      Axis Travel
+    </v-card-title>
     <v-card-text>
-      <v-simple-table v-if="hasData" dense>
+      <v-simple-table v-if="hasData" dense class="vigil-table">
         <thead>
           <tr>
             <th>Axis</th>
@@ -11,13 +14,19 @@
         </thead>
         <tbody>
           <tr v-for="row in rows" :key="row.axis">
-            <td>{{ row.axis }}</td>
+            <td>
+              <v-icon x-small class="mr-1" :color="row.isExtruder ? 'amber darken-1' : 'grey'">
+                {{ row.isExtruder ? 'mdi-printer-3d-nozzle-outline' : 'mdi-arrow-all' }}
+              </v-icon>
+              {{ row.axis }}
+            </td>
             <td class="text-right font-weight-medium">{{ row.formatted }}</td>
           </tr>
         </tbody>
       </v-simple-table>
-      <div v-else class="text-center grey--text py-8">
-        No axis data yet
+      <div v-else class="d-flex flex-column align-center justify-center" style="min-height: 160px">
+        <v-icon size="40" color="grey lighten-1">mdi-axis-arrow</v-icon>
+        <div class="text-caption grey--text mt-2">No axis data yet</div>
       </div>
     </v-card-text>
   </v-card>
@@ -37,21 +46,18 @@ export default {
         rows() {
             const rows = []
 
-            // Regular axes (X, Y, Z) — skip extruder axes (E*)
             for (const [axis, mm] of Object.entries(this.axes)) {
                 if (axis.startsWith('E')) continue
-                rows.push({ axis, formatted: this.formatDistance(mm) })
+                rows.push({ axis, formatted: this.formatDistance(mm), isExtruder: false })
             }
 
-            // Extruder axes (total travel including retracts)
             for (const [axis, mm] of Object.entries(this.axes)) {
                 if (!axis.startsWith('E')) continue
-                rows.push({ axis: `${axis} (total)`, formatted: this.formatDistance(mm) })
+                rows.push({ axis: `${axis} (total)`, formatted: this.formatDistance(mm), isExtruder: true })
             }
 
-            // Net filament
             for (const [ext, mm] of Object.entries(this.filament)) {
-                rows.push({ axis: `${ext} (filament)`, formatted: this.formatDistance(mm) })
+                rows.push({ axis: `${ext} (filament)`, formatted: this.formatDistance(mm), isExtruder: true })
             }
 
             return rows

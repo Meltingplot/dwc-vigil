@@ -1,10 +1,14 @@
 <template>
-  <v-card outlined>
-    <v-card-title class="text-subtitle-1">Fan Usage</v-card-title>
+  <v-card style="border-radius: 8px; height: 100%">
+    <v-card-title class="text-subtitle-2 pb-0">
+      <v-icon small color="teal" class="mr-2">mdi-fan</v-icon>
+      Fan Usage
+    </v-card-title>
     <v-card-text>
       <canvas ref="chart" height="200" />
-      <div v-if="!hasData" class="text-center grey--text py-8">
-        No fan data yet
+      <div v-if="!hasData" class="d-flex flex-column align-center justify-center" style="min-height: 160px">
+        <v-icon size="40" color="grey lighten-1">mdi-fan</v-icon>
+        <div class="text-caption grey--text mt-2">No fan data yet</div>
       </div>
     </v-card-text>
   </v-card>
@@ -57,7 +61,8 @@ export default {
                     datasets: [{
                         label: 'On Time (h)',
                         data: onHours,
-                        backgroundColor: '#009688',
+                        backgroundColor: 'rgba(0, 150, 136, 0.75)',
+                        borderRadius: 4,
                     }]
                 },
                 options: {
@@ -65,10 +70,17 @@ export default {
                     maintainAspectRatio: false,
                     animation: { duration: 0 },
                     responsiveAnimationDuration: 0,
-                    legend: { position: 'bottom' },
+                    legend: {
+                        position: 'bottom',
+                        labels: { boxWidth: 12, padding: 16 }
+                    },
                     scales: {
                         xAxes: [{
-                            scaleLabel: { display: true, labelString: 'Hours' }
+                            scaleLabel: { display: true, labelString: 'Hours' },
+                            gridLines: { drawBorder: false, color: 'rgba(0,0,0,0.05)' }
+                        }],
+                        yAxes: [{
+                            gridLines: { display: false }
                         }]
                     }
                 }

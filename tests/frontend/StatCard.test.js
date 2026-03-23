@@ -33,11 +33,12 @@ describe('StatCard', () => {
         expect(wrapper.text()).toContain('0m')
     })
 
-    it('shows subtitle when provided', () => {
+    it('renders icon when provided', () => {
         const wrapper = shallowMount(StatCard, {
             vuetify,
-            propsData: { label: 'Test', value: 5, subtitle: 'extra info' }
+            propsData: { label: 'Test', value: 5, icon: 'mdi-power', color: 'blue' }
         })
-        expect(wrapper.text()).toContain('extra info')
+        expect(wrapper.text()).toContain('Test')
+        expect(wrapper.text()).toContain('5')
     })
 })

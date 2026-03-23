@@ -1,10 +1,29 @@
 <template>
-  <v-container fluid>
+  <v-container fluid class="vigil-dashboard pa-4">
+    <!-- Page Header -->
+    <div class="d-flex align-center mb-1">
+      <v-icon large color="primary" class="mr-3">mdi-chart-box-outline</v-icon>
+      <div>
+        <div class="text-h5 font-weight-bold">Vigil</div>
+        <div class="text-caption grey--text">Machine usage monitoring &amp; service tracking</div>
+      </div>
+      <v-spacer />
+      <div class="d-flex align-center" style="gap: 8px">
+        <export-button :loading="exporting" @export="handleExport" />
+        <v-btn outlined small @click="openServiceLog">
+          <v-icon left small>mdi-history</v-icon>
+          Service Log
+        </v-btn>
+      </div>
+    </div>
+
+    <v-divider class="mb-4" />
+
     <!-- Counter tier tabs -->
     <counter-tabs v-model="activeTab" />
 
-    <v-row v-if="statusData" class="mt-2">
-      <!-- Row 1: Key metrics -->
+    <v-row v-if="statusData" class="mt-3">
+      <!-- Key metrics -->
       <v-col cols="12">
         <v-row>
           <v-col v-for="card in statCards" :key="card.label" cols="6" sm="4" md>
@@ -12,12 +31,14 @@
               :label="card.label"
               :value="card.value"
               :type="card.type"
+              :icon="card.icon"
+              :color="card.color"
             />
           </v-col>
         </v-row>
       </v-col>
 
-      <!-- Row 2: Charts -->
+      <!-- Jobs & Heaters section -->
       <v-col cols="12" md="5">
         <jobs-pie-chart
           :successful="currentTier.jobs_successful || 0"
@@ -28,7 +49,7 @@
         <heater-chart :heaters="currentTier.heaters || {}" />
       </v-col>
 
-      <!-- Row 3: Axis + Fan -->
+      <!-- Travel & Fans section -->
       <v-col cols="12" md="5">
         <axis-table
           :axes="currentTier.axes || {}"
@@ -39,7 +60,7 @@
         <fan-chart :fans="currentTier.fans || {}" />
       </v-col>
 
-      <!-- Row 4: System vitals -->
+      <!-- System vitals -->
       <v-col cols="12">
         <vitals-card
           :vitals="statusData.vitals || {}"
@@ -48,7 +69,7 @@
         />
       </v-col>
 
-      <!-- Row 5: History -->
+      <!-- History -->
       <v-col cols="12">
         <history-chart
           :days="historyDays"
@@ -56,34 +77,30 @@
         />
       </v-col>
 
-      <!-- Row 6: Actions -->
-      <v-col cols="12">
-        <div class="d-flex flex-wrap align-center" style="gap: 8px">
-          <export-button :loading="exporting" @export="handleExport" />
-
-          <template v-if="activeTab === 1">
-            <v-btn outlined color="warning" @click="showResetDialog = true">
-              <v-icon left>mdi-restart</v-icon>
+      <!-- Service actions (only shown for service tier) -->
+      <v-col v-if="activeTab === 1" cols="12">
+        <v-card class="vigil-card">
+          <v-card-text class="d-flex align-center" style="gap: 12px">
+            <v-icon color="amber darken-1" class="mr-1">mdi-wrench-outline</v-icon>
+            <span class="text-subtitle-2 font-weight-medium">Service Actions</span>
+            <v-spacer />
+            <v-btn color="warning" small @click="showResetDialog = true">
+              <v-icon left small>mdi-restart</v-icon>
               Reset Counter
             </v-btn>
-            <v-btn outlined color="primary" @click="showEventDialog = true">
-              <v-icon left>mdi-wrench</v-icon>
+            <v-btn color="primary" small @click="showEventDialog = true">
+              <v-icon left small>mdi-wrench</v-icon>
               Log Service Event
             </v-btn>
-          </template>
-
-          <v-btn outlined @click="openServiceLog">
-            <v-icon left>mdi-history</v-icon>
-            Service Log
-          </v-btn>
-        </div>
+          </v-card-text>
+        </v-card>
       </v-col>
     </v-row>
 
     <!-- Loading state -->
     <div v-else class="text-center py-12">
-      <v-progress-circular indeterminate size="48" />
-      <div class="mt-4 grey--text">Loading Vigil data...</div>
+      <v-progress-circular indeterminate size="48" color="primary" />
+      <div class="mt-4 text-subtitle-2 grey--text">Loading Vigil data&hellip;</div>
     </div>
 
     <!-- Dialogs -->
@@ -184,19 +201,18 @@ export default {
         statCards() {
             const t = this.currentTier
             return [
-                { label: 'Machine Hours', value: t.machine_seconds || 0, type: 'time' },
-                { label: 'Print Hours', value: t.print_seconds || 0, type: 'time' },
-                { label: 'Pause Time', value: t.pause_seconds || 0, type: 'time' },
-                { label: 'Warmup Time', value: t.warmup_seconds || 0, type: 'time' },
-                { label: 'Jobs Total', value: t.jobs_total || 0, type: 'number' },
-                { label: 'Successful', value: t.jobs_successful || 0, type: 'number' },
-                { label: 'Cancelled', value: t.jobs_cancelled || 0, type: 'number' },
+                { label: 'Machine Time', value: t.machine_seconds || 0, type: 'time', icon: 'mdi-power', color: 'blue' },
+                { label: 'Print Time', value: t.print_seconds || 0, type: 'time', icon: 'mdi-printer-3d', color: 'green' },
+                { label: 'Pause Time', value: t.pause_seconds || 0, type: 'time', icon: 'mdi-pause-circle-outline', color: 'orange' },
+                { label: 'Warmup', value: t.warmup_seconds || 0, type: 'time', icon: 'mdi-thermometer-chevron-up', color: 'deep-orange' },
+                { label: 'Jobs', value: t.jobs_total || 0, type: 'number', icon: 'mdi-format-list-numbered', color: 'indigo' },
+                { label: 'Successful', value: t.jobs_successful || 0, type: 'number', icon: 'mdi-check-circle-outline', color: 'green' },
+                { label: 'Cancelled', value: t.jobs_cancelled || 0, type: 'number', icon: 'mdi-close-circle-outline', color: 'red' },
             ]
         },
     },
     watch: {
         activeTab() {
-            // Lazy-load history when first switching away from lifetime tab
             if (!this.historyLoaded) {
                 this.loadHistory()
             }
@@ -236,7 +252,6 @@ export default {
         async loadStatus() {
             try {
                 this.statusData = await this.apiGet('status')
-                // Load history on first successful status
                 if (!this.historyLoaded) {
                     this.loadHistory()
                 }
@@ -333,3 +348,9 @@ export default {
     },
 }
 </script>
+
+<style scoped>
+.vigil-dashboard .vigil-card {
+    border-radius: 8px;
+}
+</style>

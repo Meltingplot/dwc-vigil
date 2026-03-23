@@ -1,25 +1,33 @@
 <template>
   <v-dialog v-model="visible" max-width="450" persistent>
-    <v-card>
-      <v-card-title>Log Service Event</v-card-title>
-      <v-card-text>
+    <v-card style="border-radius: 8px">
+      <v-card-title class="d-flex align-center">
+        <v-icon color="primary" class="mr-2">mdi-wrench</v-icon>
+        Log Service Event
+      </v-card-title>
+      <v-divider />
+      <v-card-text class="pt-4">
         <v-select
           v-model="component"
           :items="components"
           label="Component"
           outlined
           dense
+          prepend-inner-icon="mdi-cog-outline"
         />
         <v-textarea
           v-model="description"
-          label="Description (required)"
+          label="Description"
+          placeholder="What service was performed?"
           outlined
           dense
           rows="3"
+          prepend-inner-icon="mdi-text"
           :rules="[v => (v && v.length >= 3) || 'Min. 3 characters']"
         />
       </v-card-text>
-      <v-card-actions>
+      <v-divider />
+      <v-card-actions class="pa-4">
         <v-spacer />
         <v-btn text @click="close">Cancel</v-btn>
         <v-btn
@@ -28,6 +36,7 @@
           :loading="loading"
           @click="submit"
         >
+          <v-icon left small>mdi-check</v-icon>
           Save
         </v-btn>
       </v-card-actions>
