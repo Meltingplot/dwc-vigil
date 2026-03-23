@@ -24,7 +24,7 @@
             <td class="font-weight-medium">{{ formatTemp(vitals.sbc_cpu_temp_max) }} (max)</td>
           </tr>
           <tr v-if="sbcCpuLoadAvg != null">
-            <td class="text-caption grey--text">SBC CPU Load</td>
+            <td class="text-caption grey--text">SBC CPU Load (avg)</td>
             <td class="font-weight-medium">{{ sbcCpuLoadAvg }}%</td>
           </tr>
           <tr v-if="vitals.sbc_memory_min_bytes != null">
