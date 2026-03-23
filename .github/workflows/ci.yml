@@ -21,10 +21,10 @@ jobs:
         python-version: ["3.9", "3.10", "3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -41,10 +41,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "18"
           cache: "npm"
@@ -68,21 +68,21 @@ jobs:
 
     steps:
       - name: Checkout plugin
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: plugin
           fetch-depth: 0
           fetch-tags: true
 
       - name: Checkout DuetWebControl
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: Duet3D/DuetWebControl
           ref: ${{ github.event.inputs.duetwebcontrol_ref || 'v3.6-dev' }}
           path: DuetWebControl
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "18"
 
@@ -107,7 +107,7 @@ jobs:
           unzip DuetWebControl/dist/Vigil-*.zip -d artifact-content
 
       - name: Upload plugin ZIP
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Vigil-plugin
           path: artifact-content/*
