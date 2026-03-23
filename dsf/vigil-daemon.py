@@ -191,10 +191,9 @@ def main():
     sub = SubscribeConnection(SubscriptionMode.PATCH)
     sub.connect()
 
-    # First call must be get_object_model() to receive the full initial model
-    initial_model = sub.get_object_model()
-    model_dict = _object_model_to_dict(initial_model)
-    tracker.update(model_dict)
+    # First call: receive the complete object model
+    object_model = sub.get_object_model()
+    tracker.update(_object_model_to_dict(object_model))
 
     logger.info("Vigil daemon started — tracking active")
 
@@ -203,12 +202,12 @@ def main():
     try:
         while not _shutdown:
             try:
-                # Receive Object Model patch (JSON string, ~250ms cycle).
+                # Receive incremental patch and apply to the in-memory model.
                 # TimeoutError is expected when idle — the default 3s timeout
                 # acts as a loop heartbeat for periodic saves and shutdown checks.
-                patch_json = sub.get_object_model_patch()
-                model_dict = json.loads(patch_json)
-                tracker.update(model_dict)
+                patch = sub.get_object_model_patch()
+                object_model.update_from_json(patch)
+                tracker.update(_object_model_to_dict(object_model))
             except TimeoutError:
                 pass
             except Exception as e:
