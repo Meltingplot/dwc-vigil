@@ -1,11 +1,53 @@
-"""Tests for vigil_tracker — data model, tracking logic, service reset."""
+"""Tests for vigil_tracker — data model, tracking logic, service reset.
+
+Test models use SimpleNamespace to mirror the dsf-python ObjectModel attribute
+structure (snake_case attributes accessed via getattr).
+"""
 
 import copy
+from types import SimpleNamespace as NS
 
 import pytest
 
 from vigil_persistence import empty_state
 from vigil_tracker import VigilTracker
+
+
+def _model(state=None, move=None, heat=None, job=None):
+    """Build a minimal ObjectModel-like namespace."""
+    m = NS()
+    if state is not None:
+        m.state = NS(status=state)
+    if move is not None:
+        m.move = move
+    if heat is not None:
+        m.heat = heat
+    if job is not None:
+        m.job = job
+    return m
+
+
+def _axes(*args):
+    """Build a move namespace with axes.  Each arg is (letter, machine_position)."""
+    return NS(axes=[NS(letter=l, machine_position=p) for l, p in args],
+              extruders=[])
+
+
+def _extruders(*positions):
+    """Build a move namespace with extruders.  Each arg is a position float."""
+    return NS(axes=[], extruders=[NS(position=p) for p in positions])
+
+
+def _heaters(*args):
+    """Build a heat namespace.  Each arg is (state_str, current_float)."""
+    return NS(heaters=[NS(state=s, current=c) for s, c in args])
+
+
+def _job(file_name):
+    """Build a job namespace."""
+    if file_name is None:
+        return NS(file=NS(file_name=None))
+    return NS(file=NS(file_name=file_name))
 
 
 @pytest.fixture
@@ -27,10 +69,9 @@ class TestCounters:
         assert status["session"]["machine_seconds"] == 0.0
 
     def test_machine_time_increments(self, tracker):
-        # Simulate: machine is idle (not "off"), so machine_seconds should increase
         tracker._timer.reset()
-        tracker._timer._last_tick -= 1.0  # Pretend 1 second has passed
-        tracker.update({"state": {"status": "idle"}})
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="idle"))
 
         status = tracker.get_status()
         assert status["lifetime"]["machine_seconds"] > 0
@@ -39,13 +80,13 @@ class TestCounters:
     def test_print_time_only_during_processing(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({"state": {"status": "idle"}})
+        tracker.update(_model(state="idle"))
 
         status = tracker.get_status()
         assert status["lifetime"]["print_seconds"] == 0.0
 
         tracker._timer._last_tick -= 1.0
-        tracker.update({"state": {"status": "processing"}})
+        tracker.update(_model(state="processing"))
 
         status = tracker.get_status()
         assert status["lifetime"]["print_seconds"] > 0
@@ -53,7 +94,7 @@ class TestCounters:
     def test_no_time_when_off(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({"state": {"status": "off"}})
+        tracker.update(_model(state="off"))
 
         status = tracker.get_status()
         assert status["lifetime"]["machine_seconds"] == 0.0
@@ -61,31 +102,21 @@ class TestCounters:
 
 class TestAxisTracking:
     def test_axis_travel(self, tracker):
-        # First update establishes baseline
         tracker._timer.reset()
-        tracker.update({"move": {"axes": [{"letter": "X", "machinePosition": 0}]}})
+        tracker.update(_model(move=_axes(("X", 0))))
 
-        # Second update should register travel
         tracker._timer._last_tick -= 0.25
-        tracker.update({"move": {"axes": [{"letter": "X", "machinePosition": 100}]}})
+        tracker.update(_model(move=_axes(("X", 100))))
 
         status = tracker.get_status()
         assert status["lifetime"]["axes"]["X"] == 100.0
 
     def test_dynamic_axis_detection(self, tracker):
         tracker._timer.reset()
-        tracker.update({"move": {"axes": [
-            {"letter": "X", "machinePosition": 0},
-            {"letter": "Y", "machinePosition": 0},
-            {"letter": "Z", "machinePosition": 0},
-        ]}})
+        tracker.update(_model(move=_axes(("X", 0), ("Y", 0), ("Z", 0))))
 
         tracker._timer._last_tick -= 0.25
-        tracker.update({"move": {"axes": [
-            {"letter": "X", "machinePosition": 50},
-            {"letter": "Y", "machinePosition": 30},
-            {"letter": "Z", "machinePosition": 10},
-        ]}})
+        tracker.update(_model(move=_axes(("X", 50), ("Y", 30), ("Z", 10))))
 
         status = tracker.get_status()
         assert "X" in status["lifetime"]["axes"]
@@ -95,22 +126,17 @@ class TestAxisTracking:
 
 class TestExtruderTracking:
     def test_filament_net_positive_only(self, tracker):
-        # Establish baseline
         tracker._timer.reset()
-        tracker.update({"move": {"extruders": [{"position": 0}]}})
+        tracker.update(_model(move=_extruders(0)))
 
-        # Extrude 100mm
         tracker._timer._last_tick -= 0.25
-        tracker.update({"move": {"extruders": [{"position": 100}]}})
+        tracker.update(_model(move=_extruders(100)))
 
-        # Retract 10mm
         tracker._timer._last_tick -= 0.25
-        tracker.update({"move": {"extruders": [{"position": 90}]}})
+        tracker.update(_model(move=_extruders(90)))
 
         status = tracker.get_status()
-        # Total travel: 100 + 10 = 110
         assert status["lifetime"]["axes"]["E0"] == 110.0
-        # Net filament: 100 (retract not counted)
         assert status["lifetime"]["filament_mm"]["E0"] == 100.0
 
 
@@ -118,7 +144,7 @@ class TestJobTracking:
     def test_job_start(self, tracker):
         tracker._timer.reset()
         tracker._prev_job_file = None
-        tracker.update({"job": {"file": {"fileName": "test.gcode"}}, "state": {"status": "processing"}})
+        tracker.update(_model(state="processing", job=_job("test.gcode")))
 
         status = tracker.get_status()
         assert status["lifetime"]["jobs_total"] == 1
@@ -127,7 +153,7 @@ class TestJobTracking:
         tracker._prev_status = "processing"
         tracker._prev_job_file = "test.gcode"
         tracker._timer.reset()
-        tracker.update({"state": {"status": "idle"}, "job": {"file": {"fileName": None}}})
+        tracker.update(_model(state="idle", job=_job(None)))
 
         status = tracker.get_status()
         assert status["lifetime"]["jobs_successful"] == 1
@@ -136,7 +162,7 @@ class TestJobTracking:
         tracker._prev_status = "processing"
         tracker._prev_job_file = "test.gcode"
         tracker._timer.reset()
-        tracker.update({"state": {"status": "cancelling"}, "job": {"file": {"fileName": None}}})
+        tracker.update(_model(state="cancelling", job=_job(None)))
 
         status = tracker.get_status()
         assert status["lifetime"]["jobs_cancelled"] == 1
@@ -226,10 +252,7 @@ class TestHeaterTracking:
     def test_heater_on_time(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({
-            "state": {"status": "idle"},
-            "heat": {"heaters": [{"state": "active", "current": 0.5}]},
-        })
+        tracker.update(_model(state="idle", heat=_heaters(("active", 0.5))))
 
         status = tracker.get_status()
         assert "0" in status["lifetime"]["heaters"]
@@ -239,10 +262,7 @@ class TestHeaterTracking:
     def test_heater_full_load(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({
-            "state": {"status": "idle"},
-            "heat": {"heaters": [{"state": "active", "current": 0.98}]},
-        })
+        tracker.update(_model(state="idle", heat=_heaters(("active", 0.98))))
 
         status = tracker.get_status()
         assert status["lifetime"]["heaters"]["0"]["full_load_seconds"] > 0
@@ -250,10 +270,7 @@ class TestHeaterTracking:
     def test_heater_off_not_tracked(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({
-            "state": {"status": "idle"},
-            "heat": {"heaters": [{"state": "off", "current": 0.0}]},
-        })
+        tracker.update(_model(state="idle", heat=_heaters(("off", 0.0))))
 
         status = tracker.get_status()
         assert status["lifetime"]["heaters"] == {}
@@ -261,13 +278,10 @@ class TestHeaterTracking:
     def test_multiple_heaters(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({
-            "state": {"status": "idle"},
-            "heat": {"heaters": [
-                {"state": "active", "current": 0.5},
-                {"state": "active", "current": 1.0},
-            ]},
-        })
+        tracker.update(_model(
+            state="idle",
+            heat=_heaters(("active", 0.5), ("active", 1.0)),
+        ))
 
         status = tracker.get_status()
         assert "0" in status["lifetime"]["heaters"]
@@ -279,91 +293,89 @@ class TestUpdateEdgeCases:
     def test_zero_dt_skips_update(self, tracker):
         """When tick returns 0, update should be a no-op."""
         tracker._timer.reset()
-        # Immediately call update with no time elapsed
-        tracker.update({"state": {"status": "idle"}})
+        tracker.update(_model(state="idle"))
         status = tracker.get_status()
-        # machine_seconds should still be 0 (or very near 0)
         assert status["lifetime"]["machine_seconds"] < 0.01
 
     def test_missing_status_in_model(self, tracker):
         """Model without state.status should not crash."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({"move": {"axes": []}})
+        tracker.update(_model(move=NS(axes=[], extruders=[])))
         # Should not raise
 
-    def test_axes_not_a_list(self, tracker):
-        """Non-list axes value should be skipped."""
+    def test_axes_none(self, tracker):
+        """None axes should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "move": {"axes": "invalid"}})
+        tracker.update(_model(state="idle", move=NS(axes=None, extruders=[])))
         assert tracker.get_status()["lifetime"]["axes"] == {}
 
-    def test_extruders_not_a_list(self, tracker):
-        """Non-list extruders value should be skipped."""
+    def test_extruders_none(self, tracker):
+        """None extruders should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "move": {"extruders": None}})
-        assert tracker.get_status()["lifetime"]["filament_mm"] == {}
-
-    def test_axis_entry_not_dict(self, tracker):
-        """Non-dict axis entries should be skipped."""
-        tracker._timer.reset()
-        tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "move": {"axes": [None, 42]}})
-        assert tracker.get_status()["lifetime"]["axes"] == {}
-
-    def test_extruder_entry_not_dict(self, tracker):
-        """Non-dict extruder entries should be skipped."""
-        tracker._timer.reset()
-        tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "move": {"extruders": [None]}})
+        tracker.update(_model(state="idle", move=NS(axes=[], extruders=None)))
         assert tracker.get_status()["lifetime"]["filament_mm"] == {}
 
     def test_axis_missing_position(self, tracker):
-        """Axis without machinePosition should be skipped."""
+        """Axis without machine_position should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "move": {"axes": [{"letter": "X"}]}})
+        tracker.update(_model(state="idle", move=NS(axes=[NS(letter="X")], extruders=[])))
         assert "X" not in tracker.get_status()["lifetime"]["axes"]
 
     def test_extruder_missing_position(self, tracker):
         """Extruder without position should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "move": {"extruders": [{"other": 1}]}})
+        tracker.update(_model(state="idle", move=NS(axes=[], extruders=[NS(other=1)])))
         assert tracker.get_status()["lifetime"]["filament_mm"] == {}
 
-    def test_heaters_not_a_list(self, tracker):
-        """Non-list heaters value should be skipped."""
+    def test_heaters_none(self, tracker):
+        """None heaters should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "heat": {"heaters": "nope"}})
+        tracker.update(_model(state="idle", heat=NS(heaters=None)))
         assert tracker.get_status()["lifetime"]["heaters"] == {}
 
-    def test_heater_entry_not_dict(self, tracker):
-        """Non-dict heater entries should be skipped."""
+    def test_heater_missing_state(self, tracker):
+        """Heater without state attribute should be skipped."""
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.25
-        tracker.update({"state": {"status": "idle"}, "heat": {"heaters": [None]}})
+        tracker.update(_model(state="idle", heat=NS(heaters=[NS(current=0.5)])))
         assert tracker.get_status()["lifetime"]["heaters"] == {}
 
     def test_axis_travel_sanity_check(self, tracker):
         """Delta >= 100km per tick should be ignored."""
         tracker._timer.reset()
-        tracker.update({"move": {"axes": [{"letter": "X", "machinePosition": 0}]}})
+        tracker.update(_model(move=_axes(("X", 0))))
         tracker._timer._last_tick -= 0.25
-        tracker.update({"move": {"axes": [{"letter": "X", "machinePosition": 200000}]}})
+        tracker.update(_model(move=_axes(("X", 200000))))
         assert tracker.get_status()["lifetime"]["axes"] == {}
 
     def test_extruder_travel_sanity_check(self, tracker):
         """Delta >= 10m per tick should be ignored."""
         tracker._timer.reset()
-        tracker.update({"move": {"extruders": [{"position": 0}]}})
+        tracker.update(_model(move=_extruders(0)))
         tracker._timer._last_tick -= 0.25
-        tracker.update({"move": {"extruders": [{"position": 50000}]}})
+        tracker.update(_model(move=_extruders(50000)))
         assert tracker.get_status()["lifetime"]["axes"] == {}
         assert tracker.get_status()["lifetime"]["filament_mm"] == {}
+
+    def test_no_move_attribute(self, tracker):
+        """Model without move attribute should not crash."""
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle"))
+        assert tracker.get_status()["lifetime"]["axes"] == {}
+
+    def test_no_heat_attribute(self, tracker):
+        """Model without heat attribute should not crash."""
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle"))
+        assert tracker.get_status()["lifetime"]["heaters"] == {}
 
 
 class TestServiceResetAdditional:
@@ -428,13 +440,13 @@ class TestDirtyFlag:
     def test_update_sets_dirty(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({"state": {"status": "idle"}})
+        tracker.update(_model(state="idle"))
         assert tracker.dirty
 
     def test_clear_dirty(self, tracker):
         tracker._timer.reset()
         tracker._timer._last_tick -= 1.0
-        tracker.update({"state": {"status": "idle"}})
+        tracker.update(_model(state="idle"))
         tracker.clear_dirty()
         assert not tracker.dirty
 
@@ -498,7 +510,7 @@ class TestDailySnapshots:
         tracker._data["lifetime"]["machine_seconds"] = 100
         tracker._timer.reset()
         tracker._timer._last_tick -= 0.5
-        tracker.update({"state": {"status": "idle"}})
+        tracker.update(_model(state="idle"))
 
         from vigil_persistence import load_month_history
         ym = yesterday.strftime("%Y-%m")

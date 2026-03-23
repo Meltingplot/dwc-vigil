@@ -156,72 +156,6 @@ def register_endpoints(cmd, tracker):
     return registered
 
 
-def _subscribe_filter():
-    """Return the Object Model filter for SubscribeConnection."""
-    return (
-        "state/status|"
-        "move/axes[]/letter,machinePosition|"
-        "move/extruders[]/position|"
-        "heat/heaters[]/state,current|"
-        "job/file/fileName"
-    )
-
-
-def _object_model_to_dict(model) -> dict:
-    """Convert a dsf-python object model (or patch) to a plain dict."""
-    if isinstance(model, dict):
-        return model
-    try:
-        return json.loads(model.to_json())
-    except Exception:
-        pass
-    # Fallback: manually extract what we need
-    result = {}
-    try:
-        state = getattr(model, "state", None)
-        if state:
-            result["state"] = {"status": getattr(state, "status", None)}
-    except Exception:
-        pass
-    try:
-        move = getattr(model, "move", None)
-        if move:
-            axes_list = []
-            for ax in (getattr(move, "axes", None) or []):
-                axes_list.append({
-                    "letter": getattr(ax, "letter", None),
-                    "machinePosition": getattr(ax, "machine_position", None),
-                })
-            extruders_list = []
-            for ext in (getattr(move, "extruders", None) or []):
-                extruders_list.append({
-                    "position": getattr(ext, "position", None),
-                })
-            result["move"] = {"axes": axes_list, "extruders": extruders_list}
-    except Exception:
-        pass
-    try:
-        heat = getattr(model, "heat", None)
-        if heat:
-            heaters_list = []
-            for h in (getattr(heat, "heaters", None) or []):
-                heaters_list.append({
-                    "state": getattr(h, "state", None),
-                    "current": getattr(h, "current", None),
-                })
-            result["heat"] = {"heaters": heaters_list}
-    except Exception:
-        pass
-    try:
-        job = getattr(model, "job", None)
-        if job:
-            jf = getattr(job, "file", None)
-            result["job"] = {"file": {"fileName": getattr(jf, "file_name", None) if jf else None}}
-    except Exception:
-        pass
-    return result
-
-
 def main():
     global _tracker, _shutdown
 
@@ -249,9 +183,12 @@ def main():
     update_plugin_data(cmd, tracker)
 
     # SubscribeConnection for Object Model updates
-    sub = SubscribeConnection()
+    sub = SubscribeConnection(SubscriptionMode.PATCH)
     sub.connect()
-    sub.subscribe(SubscriptionMode.PATCH, _subscribe_filter())
+
+    # First call: receive the complete object model
+    object_model = sub.get_object_model()
+    tracker.update(object_model)
 
     logger.info("Vigil daemon started — tracking active")
 
@@ -260,10 +197,14 @@ def main():
     try:
         while not _shutdown:
             try:
-                # Receive Object Model update (blocking, ~250ms cycle)
-                model_update = sub.get_object_model()
-                model_dict = _object_model_to_dict(model_update)
-                tracker.update(model_dict)
+                # Receive incremental patch and apply to the in-memory model.
+                # TimeoutError is expected when idle — the default 3s timeout
+                # acts as a loop heartbeat for periodic saves and shutdown checks.
+                patch = sub.get_object_model_patch()
+                object_model.update_from_json(patch)
+                tracker.update(object_model)
+            except TimeoutError:
+                pass
             except Exception as e:
                 if _shutdown:
                     break

@@ -3,6 +3,11 @@ Vigil Tracker — Data model and tracking logic for three counter tiers.
 
 Tracks: machine hours, print hours, jobs, axis travel, filament usage, heater time.
 Three tiers: lifetime (never reset), service (individually resettable), session (in-memory).
+
+The update() method accepts a dsf-python ObjectModel directly.  Attributes are
+accessed via getattr() with snake_case names (dsf-python auto-converts from
+camelCase).  Enum values (MachineStatus, HeaterState, AxisLetter) inherit from
+str, so plain string comparisons work.
 """
 
 import copy
@@ -70,17 +75,21 @@ class VigilTracker:
 
     # --- Update from Object Model ---
 
-    def update(self, model: dict):
+    def update(self, model):
         """
-        Process an Object Model update (PATCH or full).
-        Called on each SubscribeConnection update (~250ms).
+        Process an ObjectModel update.
+        Called on each SubscribeConnection cycle (~250ms).
+        model is a dsf-python ObjectModel instance (or any object with the same
+        attribute structure, e.g. SimpleNamespace in tests).
         """
         dt = self._timer.tick()
         if dt <= 0:
             return
 
-        status = _get_nested(model, "state", "status")
+        state = getattr(model, "state", None)
+        status = getattr(state, "status", None) if state is not None else None
         if status is not None:
+            status = str(status)
             self._update_time_counters(status, dt)
             self._update_job_tracking(status, model)
             self._prev_status = status
@@ -100,11 +109,13 @@ class VigilTracker:
         if status == "processing":
             self._add("print_seconds", dt)
 
-    def _update_job_tracking(self, status: str, model: dict):
+    def _update_job_tracking(self, status: str, model):
         """Track job start/end transitions."""
-        job_file = _get_nested(model, "job", "file", "fileName")
+        job = getattr(model, "job", None)
+        job_file_info = getattr(job, "file", None) if job is not None else None
+        job_file = getattr(job_file_info, "file_name", None) if job_file_info is not None else None
 
-        # Job start: fileName transitions from None to value
+        # Job start: file_name transitions from None to value
         if job_file is not None and self._prev_job_file is None:
             self._add("jobs_total", 1)
             self._dirty = True
@@ -120,19 +131,21 @@ class VigilTracker:
 
         self._prev_job_file = job_file
 
-    def _update_axis_travel(self, model: dict):
+    def _update_axis_travel(self, model):
         """Track axis travel distances."""
-        axes = _get_nested(model, "move", "axes")
-        if not isinstance(axes, list):
+        move = getattr(model, "move", None)
+        if move is None:
+            return
+        axes = getattr(move, "axes", None)
+        if axes is None:
             return
 
         for axis in axes:
-            if not isinstance(axis, dict):
-                continue
-            letter = axis.get("letter")
-            pos = axis.get("machinePosition")
+            letter = getattr(axis, "letter", None)
+            pos = getattr(axis, "machine_position", None)
             if letter is None or pos is None:
                 continue
+            letter = str(letter)
 
             if letter in self._prev_axis_pos:
                 delta = abs(pos - self._prev_axis_pos[letter])
@@ -141,16 +154,17 @@ class VigilTracker:
 
             self._prev_axis_pos[letter] = pos
 
-    def _update_extruder_travel(self, model: dict):
+    def _update_extruder_travel(self, model):
         """Track extruder travel and net filament usage."""
-        extruders = _get_nested(model, "move", "extruders")
-        if not isinstance(extruders, list):
+        move = getattr(model, "move", None)
+        if move is None:
+            return
+        extruders = getattr(move, "extruders", None)
+        if extruders is None:
             return
 
         for i, ext in enumerate(extruders):
-            if not isinstance(ext, dict):
-                continue
-            pos = ext.get("position")
+            pos = getattr(ext, "position", None)
             if pos is None:
                 continue
 
@@ -169,23 +183,24 @@ class VigilTracker:
 
             self._prev_extruder_pos[i] = pos
 
-    def _update_heaters(self, model: dict, dt: float):
+    def _update_heaters(self, model, dt: float):
         """Track heater on-time and full-load time."""
-        heaters = _get_nested(model, "heat", "heaters")
-        if not isinstance(heaters, list):
+        heat = getattr(model, "heat", None)
+        if heat is None:
+            return
+        heaters = getattr(heat, "heaters", None)
+        if heaters is None:
             return
 
         for i, heater in enumerate(heaters):
-            if not isinstance(heater, dict):
-                continue
-            state = heater.get("state")
+            state = getattr(heater, "state", None)
             key = str(i)
 
-            if state is not None and state != "off":
+            if state is not None and str(state) != "off":
                 self._add_heater(key, "on_seconds", dt)
 
                 # Full load: check current PWM value
-                current = heater.get("current")
+                current = getattr(heater, "current", None)
                 if current is not None and current >= 0.95:
                     self._add_heater(key, "full_load_seconds", dt)
 
@@ -430,14 +445,3 @@ class VigilTracker:
                 lines.append(f"{tier_name},heater_full_load_seconds,{h},{vals.get('full_load_seconds', 0)}")
 
         return "\n".join(lines) + "\n"
-
-
-# --- Helpers ---
-
-def _get_nested(d: dict, *keys):
-    """Safely get a nested value from a dict."""
-    for key in keys:
-        if not isinstance(d, dict):
-            return None
-        d = d.get(key)
-    return d
