@@ -291,6 +291,51 @@ class TestAxisHomedFiltering:
         # Only the 20mm from the normal move should be tracked
         assert status["lifetime"]["axes"]["X"] == 20.0
 
+    def test_homed_to_unhomed_starts_grace_period(self, tracker):
+        """When a homed axis becomes unhomed (e.g. G28 starts), the
+        homed→unhomed transition starts a grace period so that when the
+        axis becomes homed again the grace is already running."""
+        t = time.monotonic()
+        with patch("vigil_tracker.time") as mock_time:
+            mock_time.monotonic.return_value = t
+            tracker._timer.reset()
+            tracker.update(_model(move=_axes(("X", 100, True))))
+
+            # Past initial grace, normal move
+            mock_time.monotonic.return_value = t + 11
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 100, True))))
+            mock_time.monotonic.return_value = t + 11.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 120, True))))
+
+            # Axis becomes unhomed — grace starts at t+20
+            mock_time.monotonic.return_value = t + 20
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 120, False))))
+
+            # Axis becomes homed again at t+22 — grace restarts
+            mock_time.monotonic.return_value = t + 22
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 880, True))))
+
+            # t+29 is within 10s of the t+22 unhomed→homed transition
+            mock_time.monotonic.return_value = t + 29
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 870, True))))
+
+            # t+33 is past the grace period (>10s from t+22)
+            mock_time.monotonic.return_value = t + 33
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 870, True))))
+            mock_time.monotonic.return_value = t + 33.25
+            tracker._timer._last_tick -= 0.25
+            tracker.update(_model(move=_axes(("X", 850, True))))
+
+        status = tracker.get_status()
+        # 20mm pre-homing + 20mm post-grace = 40mm
+        assert status["lifetime"]["axes"]["X"] == 40.0
+
 
 class TestExtruderTracking:
     def test_filament_net_positive_only(self, tracker):

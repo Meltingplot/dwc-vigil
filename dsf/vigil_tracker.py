@@ -177,10 +177,10 @@ class VigilTracker:
         """Track axis travel distances. Only tracks homed axes to avoid
         false deltas from homing moves resetting positions.
 
-        After an unhomed→homed transition a 10s grace period suppresses
-        tracking.  This covers multi-tap homing sequences (first tap homes,
-        rewinds, second slower tap re-homes) where the PATCH subscription
-        may also miss the brief intermediate homed=False blip.
+        Any homed state change (unhomed→homed OR homed→unhomed) starts a
+        10s grace period that suppresses tracking.  This covers multi-tap
+        homing sequences and the moves leading into/out of homing where
+        the PATCH subscription may miss brief intermediate state changes.
         """
         move = getattr(model, "move", None)
         if move is None:
@@ -202,15 +202,17 @@ class VigilTracker:
             was_homed = self._prev_axis_homed.get(letter, False)
             self._prev_axis_homed[letter] = homed
 
-            if not homed:
-                # Clear previous position so we don't get a false delta
-                # when the axis becomes homed
+            # Any homed state change starts/restarts the grace period
+            if homed != was_homed:
+                self._axis_homed_at[letter] = now
                 self._prev_axis_pos.pop(letter, None)
+                if not homed:
+                    continue
+                # unhomed→homed: skip this tick (grace period will
+                # suppress subsequent ticks too)
                 continue
 
-            # Detect unhomed→homed transition (or first time seen as homed)
-            if not was_homed:
-                self._axis_homed_at[letter] = now
+            if not homed:
                 self._prev_axis_pos.pop(letter, None)
                 continue
 
