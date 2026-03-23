@@ -921,12 +921,12 @@ class TestSbcVitals:
         tracker._timer._last_tick -= 0.25
         tracker.update(_model(
             state="idle",
-            sbc=NS(cpu=NS(temperature=None, avg_load=0.15), memory=None, uptime=None),
+            sbc=NS(cpu=NS(temperature=None, avg_load=15), memory=None, uptime=None),
         ))
         tracker._timer._last_tick -= 0.25
         tracker.update(_model(
             state="idle",
-            sbc=NS(cpu=NS(temperature=None, avg_load=0.25), memory=None, uptime=None),
+            sbc=NS(cpu=NS(temperature=None, avg_load=25), memory=None, uptime=None),
         ))
 
         vitals = tracker._data["vitals"]
