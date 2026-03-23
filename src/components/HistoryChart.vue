@@ -1,7 +1,8 @@
 <template>
-  <v-card outlined>
-    <v-card-title class="text-subtitle-1 d-flex align-center">
-      History
+  <v-card style="border-radius: 8px">
+    <v-card-title class="text-subtitle-2 d-flex align-center pb-0">
+      <v-icon small color="blue" class="mr-2">mdi-chart-timeline-variant</v-icon>
+      30-Day History
       <v-spacer />
       <v-select
         v-model="metric"
@@ -10,7 +11,7 @@
         outlined
         hide-details
         style="max-width: 200px"
-        class="ml-2"
+        class="ml-2 text-caption"
       />
       <v-select
         v-if="subKeys.length > 0"
@@ -20,16 +21,17 @@
         outlined
         hide-details
         style="max-width: 120px"
-        class="ml-2"
+        class="ml-2 text-caption"
       />
     </v-card-title>
     <v-card-text>
       <canvas ref="chart" height="200" />
-      <div v-if="loading" class="text-center py-8">
-        <v-progress-circular indeterminate size="32" />
+      <div v-if="loading" class="d-flex flex-column align-center justify-center" style="min-height: 160px">
+        <v-progress-circular indeterminate size="32" color="primary" />
       </div>
-      <div v-else-if="!hasData" class="text-center grey--text py-8">
-        No history data yet
+      <div v-else-if="!hasData" class="d-flex flex-column align-center justify-center" style="min-height: 160px">
+        <v-icon size="40" color="grey lighten-1">mdi-chart-timeline-variant</v-icon>
+        <div class="text-caption grey--text mt-2">No history data yet</div>
       </div>
     </v-card-text>
   </v-card>
@@ -69,12 +71,12 @@ export default {
                 { text: 'Axis Travel (mm)', value: 'axis_travel_mm' },
                 { text: 'Filament (mm)', value: 'filament_mm' },
                 { header: 'Vitals' },
-                { text: 'MCU Temp Max (°C)', value: 'mcu_temp_max' },
-                { text: 'MCU Temp Min (°C)', value: 'mcu_temp_min' },
-                { text: 'Vin Max (V)', value: 'vin_max' },
-                { text: 'Vin Min (V)', value: 'vin_min' },
-                { text: 'V12 Max (V)', value: 'v12_max' },
-                { text: 'V12 Min (V)', value: 'v12_min' },
+                { text: 'MCU Temp Max', value: 'mcu_temp_max' },
+                { text: 'MCU Temp Min', value: 'mcu_temp_min' },
+                { text: 'Vin Max', value: 'vin_max' },
+                { text: 'Vin Min', value: 'vin_min' },
+                { text: 'V12 Max', value: 'v12_max' },
+                { text: 'V12 Min', value: 'v12_min' },
                 { text: 'SBC CPU Temp Max', value: 'sbc_cpu_temp_max' },
                 { text: 'SBC CPU Load Avg', value: 'sbc_cpu_load_avg' },
                 { text: 'SBC Memory Min (MB)', value: 'sbc_memory_min_mb' },
@@ -161,7 +163,8 @@ export default {
                     datasets: [{
                         label,
                         data,
-                        backgroundColor: '#1976D2',
+                        backgroundColor: 'rgba(25, 118, 210, 0.65)',
+                        borderRadius: 3,
                     }]
                 },
                 options: {
@@ -175,11 +178,13 @@ export default {
                             ticks: {
                                 maxRotation: 45,
                                 maxTicksLimit: 15,
-                            }
+                            },
+                            gridLines: { display: false }
                         }],
                         yAxes: [{
                             ticks: { beginAtZero: true },
-                            scaleLabel: { display: true, labelString: label }
+                            scaleLabel: { display: true, labelString: label },
+                            gridLines: { drawBorder: false, color: 'rgba(0,0,0,0.05)' }
                         }]
                     }
                 }

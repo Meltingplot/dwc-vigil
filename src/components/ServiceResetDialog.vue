@@ -1,18 +1,23 @@
 <template>
   <v-dialog v-model="visible" max-width="500" persistent>
-    <v-card>
-      <v-card-title>Reset Service Counter</v-card-title>
-      <v-card-text>
+    <v-card style="border-radius: 8px">
+      <v-card-title class="d-flex align-center">
+        <v-icon color="warning" class="mr-2">mdi-restart</v-icon>
+        Reset Service Counter
+      </v-card-title>
+      <v-divider />
+      <v-card-text class="pt-4">
         <v-select
           v-model="scope"
           :items="scopes"
           label="Scope"
           outlined
           dense
+          prepend-inner-icon="mdi-target"
         />
 
         <div v-if="availableKeys.length > 0" class="mb-4">
-          <div class="text-caption mb-1">Select counters to reset:</div>
+          <div class="text-caption font-weight-medium mb-2">Select counters to reset:</div>
           <v-checkbox
             v-for="key in availableKeys"
             :key="key"
@@ -32,22 +37,26 @@
           outlined
           dense
           clearable
+          prepend-inner-icon="mdi-cog-outline"
         />
 
         <v-textarea
           v-model="description"
-          label="Reason (required)"
+          label="Reason"
+          placeholder="Why are you resetting this counter?"
           outlined
           dense
           rows="2"
+          prepend-inner-icon="mdi-text"
           :rules="[v => (v && v.length >= 3) || 'Min. 3 characters']"
         />
 
-        <v-alert v-if="scope && currentValues" type="warning" dense text class="mt-2">
-          Current values will be reset to 0
+        <v-alert v-if="scope" type="warning" dense text class="mb-0">
+          Selected counter values will be reset to zero.
         </v-alert>
       </v-card-text>
-      <v-card-actions>
+      <v-divider />
+      <v-card-actions class="pa-4">
         <v-spacer />
         <v-btn text @click="close">Cancel</v-btn>
         <v-btn
@@ -56,6 +65,7 @@
           :loading="loading"
           @click="submit"
         >
+          <v-icon left small>mdi-restart</v-icon>
           Reset
         </v-btn>
       </v-card-actions>

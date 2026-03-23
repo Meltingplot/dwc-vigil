@@ -1,16 +1,22 @@
 <template>
   <v-menu offset-y>
     <template #activator="{ on, attrs }">
-      <v-btn outlined v-bind="attrs" :loading="loading" v-on="on">
-        <v-icon left>mdi-download</v-icon>
+      <v-btn outlined small v-bind="attrs" :loading="loading" v-on="on">
+        <v-icon left small>mdi-download</v-icon>
         Export
       </v-btn>
     </template>
     <v-list dense>
       <v-list-item @click="$emit('export', 'json')">
+        <v-list-item-icon class="mr-2">
+          <v-icon small>mdi-code-json</v-icon>
+        </v-list-item-icon>
         <v-list-item-title>Export JSON</v-list-item-title>
       </v-list-item>
       <v-list-item @click="$emit('export', 'csv')">
+        <v-list-item-icon class="mr-2">
+          <v-icon small>mdi-file-delimited</v-icon>
+        </v-list-item-icon>
         <v-list-item-title>Export CSV</v-list-item-title>
       </v-list-item>
     </v-list>

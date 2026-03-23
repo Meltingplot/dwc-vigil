@@ -1,10 +1,14 @@
 <template>
-  <v-card outlined>
-    <v-card-title class="text-subtitle-1">Heater Usage</v-card-title>
+  <v-card style="border-radius: 8px; height: 100%">
+    <v-card-title class="text-subtitle-2 pb-0">
+      <v-icon small color="deep-orange" class="mr-2">mdi-thermometer</v-icon>
+      Heater Usage
+    </v-card-title>
     <v-card-text>
       <canvas ref="chart" height="200" />
-      <div v-if="!hasData" class="text-center grey--text py-8">
-        No heater data yet
+      <div v-if="!hasData" class="d-flex flex-column align-center justify-center" style="min-height: 160px">
+        <v-icon size="40" color="grey lighten-1">mdi-thermometer</v-icon>
+        <div class="text-caption grey--text mt-2">No heater data yet</div>
       </div>
     </v-card-text>
   </v-card>
@@ -60,12 +64,14 @@ export default {
                         {
                             label: 'On Time (h)',
                             data: onHours,
-                            backgroundColor: '#2196F3',
+                            backgroundColor: 'rgba(33, 150, 243, 0.75)',
+                            borderRadius: 4,
                         },
                         {
                             label: 'Full Load (h)',
                             data: fullLoadHours,
-                            backgroundColor: '#FF9800',
+                            backgroundColor: 'rgba(255, 152, 0, 0.75)',
+                            borderRadius: 4,
                         }
                     ]
                 },
@@ -74,10 +80,17 @@ export default {
                     maintainAspectRatio: false,
                     animation: { duration: 0 },
                     responsiveAnimationDuration: 0,
-                    legend: { position: 'bottom' },
+                    legend: {
+                        position: 'bottom',
+                        labels: { boxWidth: 12, padding: 16 }
+                    },
                     scales: {
                         xAxes: [{
-                            scaleLabel: { display: true, labelString: 'Hours' }
+                            scaleLabel: { display: true, labelString: 'Hours' },
+                            gridLines: { drawBorder: false, color: 'rgba(0,0,0,0.05)' }
+                        }],
+                        yAxes: [{
+                            gridLines: { display: false }
                         }]
                     }
                 }
