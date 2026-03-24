@@ -58,11 +58,13 @@ def _heaters(*args):
     return NS(heaters=[NS(state=s, avg_pwm=c) for s, c in args])
 
 
-def _job(file_name, warm_up_duration=None):
+def _job(file_name, warm_up_duration=None, pause_duration=None):
     """Build a job namespace."""
     if file_name is None:
-        return NS(file=NS(file_name=None), warm_up_duration=warm_up_duration)
-    return NS(file=NS(file_name=file_name), warm_up_duration=warm_up_duration)
+        return NS(file=NS(file_name=None), warm_up_duration=warm_up_duration,
+                  pause_duration=pause_duration)
+    return NS(file=NS(file_name=file_name), warm_up_duration=warm_up_duration,
+              pause_duration=pause_duration)
 
 
 @pytest.fixture
@@ -1087,29 +1089,63 @@ class TestVolumeTracking:
 
 
 class TestPauseWarmupTracking:
-    def test_pause_time_tracked(self, tracker):
+    def test_pause_time_tracked_from_object_model(self, tracker):
+        """pause_duration from ObjectModel ticks up continuously while paused."""
         tracker._timer.reset()
-        tracker._timer._last_tick -= 1.0
-        tracker.update(_model(state="paused"))
 
-        status = tracker.get_status()
-        assert status["lifetime"]["pause_seconds"] > 0
+        # Job running, no pause yet
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="processing", job=_job("test.gcode", pause_duration=None)))
+        assert tracker.get_status()["lifetime"]["pause_seconds"] == 0.0
 
-    def test_pausing_state_tracked(self, tracker):
+        # Pause starts, duration ticks up
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="paused", job=_job("test.gcode", pause_duration=5)))
+        assert tracker.get_status()["lifetime"]["pause_seconds"] == 5.0
+
+        # Still paused, duration increases
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="paused", job=_job("test.gcode", pause_duration=10)))
+        assert tracker.get_status()["lifetime"]["pause_seconds"] == 10.0
+
+    def test_pause_no_double_count(self, tracker):
+        """Same pause_duration value on next tick adds nothing."""
         tracker._timer.reset()
-        tracker._timer._last_tick -= 1.0
-        tracker.update(_model(state="pausing"))
 
-        status = tracker.get_status()
-        assert status["lifetime"]["pause_seconds"] > 0
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="paused", job=_job("test.gcode", pause_duration=20)))
 
-    def test_idle_no_pause(self, tracker):
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="processing", job=_job("test.gcode", pause_duration=20)))
+
+        assert tracker.get_status()["lifetime"]["pause_seconds"] == 20.0
+
+    def test_no_pause_when_none(self, tracker):
+        """If pause_duration stays None, no pause is counted."""
         tracker._timer.reset()
-        tracker._timer._last_tick -= 1.0
-        tracker.update(_model(state="idle"))
 
-        status = tracker.get_status()
-        assert status["lifetime"]["pause_seconds"] == 0.0
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle", job=_job("test.gcode", pause_duration=None)))
+
+        assert tracker.get_status()["lifetime"]["pause_seconds"] == 0.0
+
+    def test_pause_accumulates_across_jobs(self, tracker):
+        """Pause from multiple jobs accumulates."""
+        tracker._timer.reset()
+
+        # First job: 10s pause
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="processing", job=_job("j1.gcode", pause_duration=10)))
+
+        # Job ends
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="idle", job=_job(None)))
+
+        # Second job: 15s pause
+        tracker._timer._last_tick -= 0.25
+        tracker.update(_model(state="processing", job=_job("j2.gcode", pause_duration=15)))
+
+        assert tracker.get_status()["lifetime"]["pause_seconds"] == 25.0
 
 
 class TestServiceResetNewScopes:
