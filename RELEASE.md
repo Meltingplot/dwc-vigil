@@ -70,4 +70,4 @@ Upload the plugin ZIP through DuetWebControl's **Settings → Plugins → Instal
 
 ## License
 
-LGPL-3.0-or-later
+MIT
