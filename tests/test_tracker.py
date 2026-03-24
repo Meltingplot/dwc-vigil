@@ -353,6 +353,58 @@ class TestExtruderTracking:
         assert status["lifetime"]["filament_mm"]["E0"] == 100.0
 
 
+class TestWarmup:
+    def test_warmup_counts_busy_before_processing(self, tracker):
+        """Busy with a job file loaded, before processing, is warmup."""
+        tracker._timer.reset()
+        # Simulate: job file loaded, status goes busy (heating/homing)
+        tracker._prev_job_file = "test.gcode"
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="busy", job=_job("test.gcode")))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["warmup_seconds"] > 0
+
+    def test_warmup_stops_after_processing(self, tracker):
+        """Once processing has been reached, subsequent busy is NOT warmup."""
+        tracker._timer.reset()
+        tracker._prev_job_file = "test.gcode"
+
+        # First: processing (sets _job_has_processed)
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="processing", job=_job("test.gcode")))
+        warmup_after_processing = tracker.get_status()["lifetime"]["warmup_seconds"]
+
+        # Then: busy (e.g. tool change) — should NOT add warmup
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="busy", job=_job("test.gcode")))
+
+        # Second busy tick — _prev_status is now "busy"
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="busy", job=_job("test.gcode")))
+
+        assert tracker.get_status()["lifetime"]["warmup_seconds"] == warmup_after_processing
+
+    def test_warmup_resets_for_new_job(self, tracker):
+        """After a job ends and a new one starts, warmup should count again."""
+        tracker._timer.reset()
+        tracker._prev_job_file = "test.gcode"
+        tracker._job_has_processed = True  # simulate previous job reached processing
+
+        # Job ends
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="idle", job=_job(None)))
+
+        # New job starts with busy (warmup)
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="busy", job=_job("new.gcode")))
+        # Need one more tick since _prev_job_file was just set
+        tracker._timer._last_tick -= 1.0
+        tracker.update(_model(state="busy", job=_job("new.gcode")))
+
+        assert tracker.get_status()["lifetime"]["warmup_seconds"] > 0
+
+
 class TestJobTracking:
     def test_job_start(self, tracker):
         tracker._timer.reset()
