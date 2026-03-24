@@ -45,7 +45,7 @@ class VigilTracker:
         self._prev_extruder_pos = {}  # extruder_index → position
         self._prev_status = None
         self._prev_job_file = None
-        self._job_has_processed = False  # True once "processing" seen in current job
+        self._prev_warmup_duration = None  # job.warm_up_duration from previous tick
         self._prev_firmware_uptime = None
         self._prev_sbc_uptime = None
 
@@ -140,14 +140,9 @@ class VigilTracker:
 
         if status == "processing":
             self._add("print_seconds", dt)
-            self._job_has_processed = True
 
         if status in ("pausing", "paused"):
             self._add("pause_seconds", dt)
-
-        if status == "busy" and self._prev_job_file is not None and not self._job_has_processed:
-            # Warm-up is the "busy" phase before "processing" starts during a job
-            self._add("warmup_seconds", dt)
 
     def _update_job_tracking(self, status: str, model):
         """Track job start/end transitions."""
@@ -170,9 +165,20 @@ class VigilTracker:
                 self._dirty = True
             # pausing/busy/changingTool are transient — don't count yet
 
-        # Reset warm-up flag when job ends
-        if job_file is None and self._prev_job_file is not None:
-            self._job_has_processed = False
+        # Warm-up: use job.warm_up_duration from the ObjectModel.
+        # It jumps from None/0 to a value (seconds) once heating finishes,
+        # then stays constant. Track the delta.
+        warmup_dur = getattr(job, "warm_up_duration", None) if job is not None else None
+        if warmup_dur is not None and warmup_dur > 0:
+            prev = self._prev_warmup_duration or 0
+            delta = warmup_dur - prev
+            if delta > 0:
+                self._add("warmup_seconds", delta)
+        # Reset when job ends (warm_up_duration goes back to None)
+        if warmup_dur is None or job_file is None:
+            self._prev_warmup_duration = None
+        else:
+            self._prev_warmup_duration = warmup_dur
 
         self._prev_job_file = job_file
 
