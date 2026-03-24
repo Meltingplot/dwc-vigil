@@ -4,8 +4,8 @@
       <v-icon small color="deep-orange" class="mr-2">mdi-thermometer</v-icon>
       Heater Usage
     </v-card-title>
-    <v-card-text style="max-height: 280px">
-      <div v-if="hasData" style="position: relative; max-height: 240px">
+    <v-card-text>
+      <div v-if="hasData" style="position: relative; height: 200px">
         <canvas ref="chart" />
       </div>
       <div v-else class="d-flex flex-column align-center justify-center" style="height: 200px">

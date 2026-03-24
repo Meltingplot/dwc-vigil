@@ -4,8 +4,8 @@
       <v-icon small color="indigo" class="mr-2">mdi-chart-donut</v-icon>
       Job Outcomes
     </v-card-title>
-    <v-card-text style="max-height: 280px">
-      <div v-if="hasData" style="position: relative; max-height: 240px">
+    <v-card-text>
+      <div v-if="hasData" style="position: relative; height: 200px">
         <canvas ref="chart" />
       </div>
       <div v-else class="d-flex flex-column align-center justify-center" style="height: 200px">
