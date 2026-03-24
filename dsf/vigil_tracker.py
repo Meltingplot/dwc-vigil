@@ -45,6 +45,8 @@ class VigilTracker:
         self._prev_extruder_pos = {}  # extruder_index → position
         self._prev_status = None
         self._prev_job_file = None
+        self._prev_warmup_duration = None  # job.warm_up_duration from previous tick
+        self._prev_pause_duration = None   # job.pause_duration from previous tick
         self._prev_firmware_uptime = None
         self._prev_sbc_uptime = None
 
@@ -140,13 +142,6 @@ class VigilTracker:
         if status == "processing":
             self._add("print_seconds", dt)
 
-        if status in ("pausing", "paused"):
-            self._add("pause_seconds", dt)
-
-        if status == "busy" and self._prev_job_file is not None and self._prev_status in (None, "idle", "busy"):
-            # Warm-up is the "busy" phase before "processing" starts during a job
-            self._add("warmup_seconds", dt)
-
     def _update_job_tracking(self, status: str, model):
         """Track job start/end transitions."""
         job = getattr(model, "job", None)
@@ -167,6 +162,35 @@ class VigilTracker:
                 self._add("jobs_cancelled", 1)
                 self._dirty = True
             # pausing/busy/changingTool are transient — don't count yet
+
+        # Warm-up and pause: use job.warm_up_duration and job.pause_duration
+        # from the ObjectModel. These are running counters (seconds) that tick
+        # up continuously while in the respective state. Track the delta each
+        # cycle to accumulate into our own counters.
+        warmup_dur = getattr(job, "warm_up_duration", None) if job is not None else None
+        if warmup_dur is not None and warmup_dur > 0:
+            prev = self._prev_warmup_duration or 0
+            delta = warmup_dur - prev
+            if delta > 0:
+                self._add("warmup_seconds", delta)
+
+        pause_dur = getattr(job, "pause_duration", None) if job is not None else None
+        if pause_dur is not None and pause_dur > 0:
+            prev = self._prev_pause_duration or 0
+            delta = pause_dur - prev
+            if delta > 0:
+                self._add("pause_seconds", delta)
+
+        # Reset when job ends (durations go back to None)
+        if warmup_dur is None or job_file is None:
+            self._prev_warmup_duration = None
+        else:
+            self._prev_warmup_duration = warmup_dur
+
+        if pause_dur is None or job_file is None:
+            self._prev_pause_duration = None
+        else:
+            self._prev_pause_duration = pause_dur
 
         self._prev_job_file = job_file
 
