@@ -3,7 +3,7 @@
   "name": "Vigil",
   "author": "Meltingplot GmbH",
   "version": "1.0.0",
-  "license": "LGPL-3.0-or-later",
+  "license": "MIT",
   "homepage": "https://github.com/Meltingplot/dwc-vigil",
   "dwcVersion": "auto-major",
   "sbcRequired": true,
