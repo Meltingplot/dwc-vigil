@@ -5,8 +5,10 @@
       Fan Usage
     </v-card-title>
     <v-card-text>
-      <canvas ref="chart" height="200" />
-      <div v-if="!hasData" class="d-flex flex-column align-center justify-center" style="min-height: 160px">
+      <div v-if="hasData" style="position: relative; height: 200px">
+        <canvas ref="chart" />
+      </div>
+      <div v-else class="d-flex flex-column align-center justify-center" style="height: 200px">
         <v-icon size="40" color="grey lighten-1">mdi-fan</v-icon>
         <div class="text-caption grey--text mt-2">No fan data yet</div>
       </div>
@@ -42,7 +44,11 @@ export default {
     },
     methods: {
         renderChart() {
-            if (!this.$refs.chart || !this.hasData) return
+            if (!this.hasData) return
+            if (!this.$refs.chart) {
+                this.$nextTick(() => this.renderChart())
+                return
+            }
 
             const labels = Object.keys(this.fans).map(k => `Fan ${k}`)
             const onHours = Object.values(this.fans).map(f => (f.on_seconds || 0) / 3600)
