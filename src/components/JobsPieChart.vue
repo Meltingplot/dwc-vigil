@@ -34,6 +34,11 @@ export default {
     watch: {
         successful() { this.renderChart() },
         cancelled() { this.renderChart() },
+        hasData(val) {
+            if (val) {
+                this.$nextTick(() => this.renderChart())
+            }
+        },
     },
     mounted() {
         this.renderChart()
