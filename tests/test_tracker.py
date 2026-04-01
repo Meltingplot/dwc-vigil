@@ -440,6 +440,39 @@ class TestJobTracking:
         status = tracker.get_status()
         assert status["lifetime"]["jobs_cancelled"] == 1
 
+    def test_job_cancel_from_paused(self, tracker):
+        tracker._prev_status = "paused"
+        tracker._prev_job_file = "test.gcode"
+        tracker._timer.reset()
+        tracker.update(_model(state="cancelling", job=_job(None)))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["jobs_cancelled"] == 1
+
+    def test_job_cancel_from_pausing(self, tracker):
+        tracker._prev_status = "pausing"
+        tracker._prev_job_file = "test.gcode"
+        tracker._timer.reset()
+        tracker.update(_model(state="cancelling", job=_job(None)))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["jobs_cancelled"] == 1
+
+    def test_job_cancel_from_paused_no_double_count(self, tracker):
+        """Ensure cancelling -> idle does not also count as successful."""
+        tracker._prev_status = "paused"
+        tracker._prev_job_file = "test.gcode"
+        tracker._timer.reset()
+        tracker.update(_model(state="cancelling", job=_job("test.gcode")))
+
+        # Now transition cancelling -> idle
+        tracker._timer.reset()
+        tracker.update(_model(state="idle", job=_job(None)))
+
+        status = tracker.get_status()
+        assert status["lifetime"]["jobs_cancelled"] == 1
+        assert status["lifetime"]["jobs_successful"] == 0
+
 
 class TestServiceReset:
     def test_reset_machine_time(self, tracker, data_dir):
