@@ -162,6 +162,10 @@ class VigilTracker:
                 self._add("jobs_cancelled", 1)
                 self._dirty = True
             # pausing/busy/changingTool are transient — don't count yet
+        elif self._prev_status in self.ACTIVE_JOB_STATUSES and status == "cancelling":
+            # Cancellation from paused/pausing/resuming/etc.
+            self._add("jobs_cancelled", 1)
+            self._dirty = True
 
         # Warm-up and pause: use job.warm_up_duration and job.pause_duration
         # from the ObjectModel. These are running counters (seconds) that tick
@@ -193,6 +197,10 @@ class VigilTracker:
             self._prev_pause_duration = pause_dur
 
         self._prev_job_file = job_file
+
+    ACTIVE_JOB_STATUSES = frozenset({
+        "processing", "pausing", "paused", "resuming", "busy", "changingTool",
+    })
 
     HOMING_GRACE_SECS = 10.0
 
