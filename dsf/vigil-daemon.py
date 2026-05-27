@@ -60,6 +60,41 @@ try:
 except ImportError:
     pass
 
+# Monkey-patch dsf-python: NetworkInterfaceType enum missing values (e.g. 'ethernet'
+# reported by DSF 3.6.3-rc.1). The setter raises ValueError on unknown strings,
+# which crashes the entire get_object_model() call.
+try:
+    import dsf.object_model.network.network_interface_type as _nit_mod
+    import dsf.object_model.network.network_interface as _ni_mod
+    from dsf.object_model.network.network_interface import NetworkInterface as _NetworkInterface
+    from enum import Enum
+
+    class _PatchedNetworkInterfaceType(str, Enum):
+        lan = "lan"
+        wifi = "wifi"
+        ethernet = "ethernet"
+        unknown = "unknown"
+
+    _nit_mod.NetworkInterfaceType = _PatchedNetworkInterfaceType
+    _ni_mod.NetworkInterfaceType = _PatchedNetworkInterfaceType
+
+    def _safe_type_setter(self, value):
+        try:
+            if value is None or value == "":
+                self._type = _PatchedNetworkInterfaceType.wifi
+            elif isinstance(value, _PatchedNetworkInterfaceType):
+                self._type = value
+            elif isinstance(value, str):
+                self._type = _PatchedNetworkInterfaceType(value)
+            else:
+                self._type = _PatchedNetworkInterfaceType.unknown
+        except (ValueError, KeyError):
+            self._type = _PatchedNetworkInterfaceType.unknown
+
+    _NetworkInterface.type = _NetworkInterface.type.setter(_safe_type_setter)
+except ImportError:
+    pass
+
 # Monkey-patch dsf-python: Axis.letter crashes on invalid values (e.g. '\x00'
 # from uninitialized axes when the plugin loads before firmware configures them)
 try:
