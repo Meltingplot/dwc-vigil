@@ -143,7 +143,16 @@ class VigilTracker:
             self._add("print_seconds", dt)
 
     def _update_job_tracking(self, status: str, model):
-        """Track job start/end transitions."""
+        """Track job start/end transitions.
+
+        Job outcome is classified from the DSF job model's last_file_cancelled
+        and last_file_aborted flags rather than the transient "cancelling"
+        status. The ~250ms PATCH subscription frequently misses that status
+        (DSF passes through processing -> cancelling -> idle too quickly to
+        observe reliably), and aborts can settle to "halted" without ever
+        reporting "cancelling" — both cases previously went uncounted or were
+        miscounted as successful.
+        """
         job = getattr(model, "job", None)
         job_file_info = getattr(job, "file", None) if job is not None else None
         job_file = getattr(job_file_info, "file_name", None) if job_file_info is not None else None
@@ -153,18 +162,16 @@ class VigilTracker:
             self._add("jobs_total", 1)
             self._dirty = True
 
-        # Job end: only count when status reaches a terminal state
-        if self._prev_status == "processing" and status != "processing":
-            if status == "idle":
-                self._add("jobs_successful", 1)
-                self._dirty = True
-            elif status == "cancelling":
+        # Job end: the current job file is cleared (value -> None). DSF sets the
+        # last_file_* flags atomically when the job finishes, so classify the
+        # outcome from those rather than from the transient status.
+        if self._prev_job_file is not None and job_file is None:
+            cancelled = bool(getattr(job, "last_file_cancelled", False)) if job is not None else False
+            aborted = bool(getattr(job, "last_file_aborted", False)) if job is not None else False
+            if cancelled or aborted:
                 self._add("jobs_cancelled", 1)
-                self._dirty = True
-            # pausing/busy/changingTool are transient — don't count yet
-        elif self._prev_status in self.ACTIVE_JOB_STATUSES and status == "cancelling":
-            # Cancellation from paused/pausing/resuming/etc.
-            self._add("jobs_cancelled", 1)
+            else:
+                self._add("jobs_successful", 1)
             self._dirty = True
 
         # Warm-up and pause: use job.warm_up_duration and job.pause_duration
@@ -197,10 +204,6 @@ class VigilTracker:
             self._prev_pause_duration = pause_dur
 
         self._prev_job_file = job_file
-
-    ACTIVE_JOB_STATUSES = frozenset({
-        "processing", "pausing", "paused", "resuming", "busy", "changingTool",
-    })
 
     HOMING_GRACE_SECS = 10.0
 
