@@ -58,13 +58,13 @@ def _heaters(*args):
     return NS(heaters=[NS(state=s, avg_pwm=c) for s, c in args])
 
 
-def _job(file_name, warm_up_duration=None, pause_duration=None):
+def _job(file_name, warm_up_duration=None, pause_duration=None,
+         last_file_cancelled=False, last_file_aborted=False):
     """Build a job namespace."""
-    if file_name is None:
-        return NS(file=NS(file_name=None), warm_up_duration=warm_up_duration,
-                  pause_duration=pause_duration)
     return NS(file=NS(file_name=file_name), warm_up_duration=warm_up_duration,
-              pause_duration=pause_duration)
+              pause_duration=pause_duration,
+              last_file_cancelled=last_file_cancelled,
+              last_file_aborted=last_file_aborted)
 
 
 @pytest.fixture
@@ -432,42 +432,50 @@ class TestJobTracking:
         assert status["lifetime"]["jobs_successful"] == 1
 
     def test_job_cancel(self, tracker):
+        """User-cancelled job (last_file_cancelled) counts as cancelled."""
         tracker._prev_status = "processing"
         tracker._prev_job_file = "test.gcode"
         tracker._timer.reset()
-        tracker.update(_model(state="cancelling", job=_job(None)))
+        tracker.update(_model(state="idle", job=_job(None, last_file_cancelled=True)))
 
         status = tracker.get_status()
         assert status["lifetime"]["jobs_cancelled"] == 1
+        assert status["lifetime"]["jobs_successful"] == 0
 
-    def test_job_cancel_from_paused(self, tracker):
-        tracker._prev_status = "paused"
+    def test_job_abort(self, tracker):
+        """Aborted job (last_file_aborted) counts as cancelled."""
+        tracker._prev_status = "processing"
         tracker._prev_job_file = "test.gcode"
         tracker._timer.reset()
-        tracker.update(_model(state="cancelling", job=_job(None)))
+        tracker.update(_model(state="halted", job=_job(None, last_file_aborted=True)))
 
         status = tracker.get_status()
         assert status["lifetime"]["jobs_cancelled"] == 1
+        assert status["lifetime"]["jobs_successful"] == 0
 
-    def test_job_cancel_from_pausing(self, tracker):
-        tracker._prev_status = "pausing"
+    def test_job_cancel_missed_cancelling_status(self, tracker):
+        """Regression: a cancelled job is still counted even when the
+        transient 'cancelling' status is never observed (the PATCH
+        subscription skips straight from processing to idle)."""
+        tracker._prev_status = "processing"
         tracker._prev_job_file = "test.gcode"
         tracker._timer.reset()
-        tracker.update(_model(state="cancelling", job=_job(None)))
+        tracker.update(_model(state="idle", job=_job(None, last_file_cancelled=True)))
 
         status = tracker.get_status()
         assert status["lifetime"]["jobs_cancelled"] == 1
+        assert status["lifetime"]["jobs_successful"] == 0
 
-    def test_job_cancel_from_paused_no_double_count(self, tracker):
-        """Ensure cancelling -> idle does not also count as successful."""
-        tracker._prev_status = "paused"
+    def test_job_end_counts_once(self, tracker):
+        """A finished job is counted exactly once on the file_name -> None edge."""
+        tracker._prev_status = "processing"
         tracker._prev_job_file = "test.gcode"
         tracker._timer.reset()
-        tracker.update(_model(state="cancelling", job=_job("test.gcode")))
+        tracker.update(_model(state="idle", job=_job(None, last_file_cancelled=True)))
 
-        # Now transition cancelling -> idle
+        # A subsequent idle tick with no current job must not re-count.
         tracker._timer.reset()
-        tracker.update(_model(state="idle", job=_job(None)))
+        tracker.update(_model(state="idle", job=_job(None, last_file_cancelled=True)))
 
         status = tracker.get_status()
         assert status["lifetime"]["jobs_cancelled"] == 1
