@@ -117,6 +117,52 @@ try:
 except ImportError:
     pass
 
+# Monkey-patch dsf-python: BaseConnection.connect reads the server init message
+# with a fixed-size self.socket.recv(50). DSF 3.6 sends a greeting longer than
+# 50 bytes, so the JSON is truncated mid-string and json.loads raises
+# "JSONDecodeError: Unterminated string". Read until a complete JSON object has
+# arrived instead, keeping any trailing bytes for the next read.
+try:
+    import socket as _socket
+    from dsf.connections.base_connection import BaseConnection as _BaseConnection
+    from dsf.connections.init_messages.server_init_message import (
+        ServerInitMessage as _ServerInitMessage,
+    )
+    from dsf.connections.exceptions import (
+        IncompatibleVersionException as _IncompatibleVersionException,
+    )
+
+    from vigil_socket import read_json_object as _read_json_object
+
+    def _patched_connect(self, init_message, socket_file):
+        self.socket = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        self.socket.connect(socket_file)
+        self.socket.settimeout(self.timeout if self.timeout > 0 else None)
+
+        json_string, leftover = _read_json_object(self.socket.recv, self.timeout)
+        # Preserve any bytes received past the init message for later reads.
+        self.input = leftover
+
+        server_init_msg = _ServerInitMessage.from_json(json.loads(json_string))
+        if not server_init_msg.is_compatible():
+            raise _IncompatibleVersionException(
+                f"Incompatible API version (need {server_init_msg.PROTOCOL_VERSION}, "
+                f"got {server_init_msg.version})"
+            )
+        self.id = server_init_msg.id
+        self.send(init_message)
+
+        response = self.receive_response()
+        if not response.success:
+            raise Exception(
+                f"Could not set connection type {init_message.mode} "
+                f"({response.error_type}: {response.error_message})"
+            )
+
+    _BaseConnection.connect = _patched_connect
+except ImportError:
+    pass
+
 from dsf.connections import CommandConnection, SubscribeConnection, SubscriptionMode
 from dsf.object_model import HttpEndpointType
 from dsf.http import HttpEndpointConnection, HttpResponseType
