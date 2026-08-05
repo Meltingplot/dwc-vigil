@@ -25,9 +25,42 @@ A [DuetWebControl](https://github.com/Duet3D/DuetWebControl) plugin that tracks 
 
 ## Installation
 
-Upload the plugin ZIP through DuetWebControl: **Settings > Plugins > Install Plugin**.
+Upload the plugin ZIP through DuetWebControl: **Settings > Plugins > Install Plugin**, then click **Start** next to Vigil.
 
-Vigil starts automatically and begins tracking immediately.
+### Updating
+
+Installing a newer ZIP over an existing installation is an *upgrade*: DSF stops the
+SBC daemon, replaces the files, and — by design — does **not** start it again
+(`InstallPlugin` sets `pid = -1`, and the plugin is removed from the DSF autostart
+list). The DWC part stays enabled in your browser settings, so DWC reports the
+plugin as **partially started** until you press **Start** in
+**Settings > Plugins**. Pressing Start also re-adds Vigil to the autostart list, so
+it comes back up after a reboot.
+
+Reload DWC (Ctrl+Shift+R) after the upgrade so the browser picks up the new
+frontend chunks — the file names change with every build.
+
+## Troubleshooting
+
+### Plugin state is "partially started"
+
+DWC shows this when the SBC part and the DWC part disagree — either the daemon is
+not running while the DWC part is enabled, or the other way around.
+
+1. **After an upgrade** — expected, see [Updating](#updating). Press **Start**.
+2. **Start does not stick** (state falls back to "partially started" / "stopped"):
+   the daemon exited. Vigil logs the reason to stderr, which DSF captures:
+   ```bash
+   journalctl -u duetpluginservice -n 100
+   ```
+   Startup failures are printed with a full traceback.
+3. **Daemon runs but the dashboard is missing** — the DWC part failed to load and
+   DWC disabled it. Check the browser console, reload with Ctrl+Shift+R, then press
+   **Start** again.
+
+If the daemon is started before `duetcontrolserver` is ready (boot, DSF restart),
+Vigil retries the DCS connection for ~30 s before giving up instead of exiting
+immediately.
 
 ## Architecture
 

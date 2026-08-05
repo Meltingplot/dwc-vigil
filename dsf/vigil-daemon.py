@@ -125,15 +125,24 @@ from vigil_tracker import VigilTracker
 from vigil_persistence import load_data, ensure_data_dir, SAVE_INTERVAL_S
 from vigil_api import ENDPOINTS, json_response, error_response
 
+# DSF redirects stdout to "success" messages and stderr to "error" messages in
+# the DWC console (sbcOutputRedirected). Log to stderr so warnings and errors
+# are not reported as successes.
 logging.basicConfig(
     level=logging.WARNING,
     format="%(message)s",
-    stream=sys.stdout,
+    stream=sys.stderr,
 )
 logger = logging.getLogger("vigil")
 
 PLUGIN_ID = "Vigil"
 API_NAMESPACE = "Vigil"
+
+# DSF may launch the plugin before duetcontrolserver accepts connections
+# (e.g. on boot or right after a plugin upgrade). Retry instead of exiting,
+# which would leave the plugin stopped ("partially started" in DWC).
+CONNECT_ATTEMPTS = 15
+CONNECT_RETRY_DELAY_S = 2.0
 
 # Global tracker for signal handler access
 _tracker = None
@@ -145,6 +154,36 @@ def _signal_handler(signum, frame):
     global _shutdown
     _shutdown = True
     logger.debug("Signal %d received, shutting down...", signum)
+
+
+def connect_with_retry(connection, description, attempts=CONNECT_ATTEMPTS,
+                       delay=CONNECT_RETRY_DELAY_S):
+    """Connect to DCS, retrying while the socket is not available yet.
+
+    Returns True once connected, False if shutdown was requested while waiting.
+    Raises the last error if all attempts fail.
+    """
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        if _shutdown:
+            return False
+        try:
+            connection.connect()
+            if attempt > 1:
+                logger.warning("%s connected after %d attempts", description, attempt)
+            return True
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "%s connection attempt %d/%d failed: %s",
+                description, attempt, attempts, exc,
+            )
+            if attempt < attempts:
+                time.sleep(delay)
+
+    raise RuntimeError(
+        f"{description} connection failed after {attempts} attempts: {last_error}"
+    )
 
 
 def set_plugin_data(cmd, key, value):
@@ -230,28 +269,33 @@ def main():
 
     # CommandConnection for HTTP endpoints + plugin data
     cmd = CommandConnection()
-    cmd.connect()
+    if not connect_with_retry(cmd, "CommandConnection"):
+        return
 
-    # Register HTTP endpoints
-    endpoints = register_endpoints(cmd, tracker)
-    logger.debug("Registered %d HTTP endpoints", len(endpoints))
-
-    # Push initial plugin data
-    update_plugin_data(cmd, tracker)
-
-    # SubscribeConnection for Object Model updates
-    sub = SubscribeConnection(SubscriptionMode.PATCH)
-    sub.connect()
-
-    # First call: receive the complete object model
-    object_model = sub.get_object_model()
-    tracker.update(object_model)
-
-    logger.debug("Vigil daemon started — tracking active")
-
-    last_save = time.monotonic()
+    endpoints = []
+    sub = None
 
     try:
+        # Register HTTP endpoints
+        endpoints = register_endpoints(cmd, tracker)
+        logger.debug("Registered %d HTTP endpoints", len(endpoints))
+
+        # Push initial plugin data
+        update_plugin_data(cmd, tracker)
+
+        # SubscribeConnection for Object Model updates
+        sub = SubscribeConnection(SubscriptionMode.PATCH)
+        if not connect_with_retry(sub, "SubscribeConnection"):
+            return
+
+        # First call: receive the complete object model
+        object_model = sub.get_object_model()
+        tracker.update(object_model)
+
+        logger.debug("Vigil daemon started — tracking active")
+
+        last_save = time.monotonic()
+
         while not _shutdown:
             try:
                 # Receive incremental patch and apply to the in-memory model.
@@ -294,10 +338,11 @@ def main():
                 ep.close()
             except Exception:
                 pass
-        try:
-            sub.close()
-        except Exception:
-            pass
+        if sub is not None:
+            try:
+                sub.close()
+            except Exception:
+                pass
         try:
             cmd.close()
         except Exception:
@@ -307,4 +352,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException:
+        # DSF only reports the exit code, so print the traceback to stderr
+        # where it ends up in the DWC console and the plugin log.
+        sys.stderr.write("Vigil daemon terminated with an unhandled exception:\n")
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(1)
