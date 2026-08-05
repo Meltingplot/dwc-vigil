@@ -52,6 +52,41 @@ registerRoute(MyPlugin, {
 - `registerRoute` adds the entry to the Plugins menu automatically.
 - Path becomes `/plugins/MyPlugin` in the browser.
 - Icons: use `mdi-*` (Material Design Icons).
+### 2.1 Plugin upgrades leave the SBC backend stopped
+Installing a newer ZIP over an existing installation puts the plugin into DWC's
+**"partially started"** state: the DWC resources load, but the Python daemon is dead
+and every `/machine/MyPlugin/*` endpoint returns 404. This is upstream behaviour:
+1. `InstallPlugin` (DCS) detects an existing plugin and first runs
+   `UninstallPlugin { ForUpgrade = true }`, which issues `StopPlugin` and rewrites
+   `plugins.json` **without** the plugin — so it no longer auto-starts on boot either.
+2. `InstallPlugin` then re-registers the plugin with `Pid = -1` and never starts it.
+3. DWC only issues `StartPlugin` when `installPlugin` is called with `start: true`,
+   which `UploadBtn.vue` sets only for "Upload & Start" — not for the *Install Plugin*
+   button on *Settings → Plugins*.
+4. `Plugins.vue#getPluginStatus` then reports `partiallyStarted`, because
+   `(plugin.pid >= 0) != enabledPlugins.includes(id)`.
+
+**Workaround** — recover from the frontend (`src/backend.js`):
+```javascript
+export function isBackendRunning(modelState) {
+    // -1 = stopped, 0 = shutting down, > 0 = running; null while unknown
+    const plugins = modelState && modelState.plugins
+    const plugin = plugins instanceof Map ? plugins.get(PLUGIN_ID) : plugins?.[PLUGIN_ID]
+    if (!plugin || typeof plugin.pid !== 'number') return null
+    return plugin.pid > 0
+}
+export function startBackend(store) {
+    // StartPlugin defaults to SaveState = true → also restores the autostart entry
+    return Promise.resolve(store.dispatch('machine/startSbcPlugin', PLUGIN_ID))
+}
+```
+- `ensureBackendRunning(store)` is called from `src/index.js` when DWC loads the
+  plugin resources. It polls the object model until the PID is known and starts the
+  backend if it is stopped.
+- The main component shows a warning banner with a manual **Start Backend** button
+  while `backendRunning === false`, as a visible fallback.
+- `@/store` (like `@/routes`) is provided by DWC at build time; `src/store.js` is an
+  inert Jest-only stub and must be excluded from the plugin ZIP.
 ---
 ## 3. DSF Python Bugs You MUST Patch
 All patches go at the top of your daemon file, wrapped in `try/except ImportError: pass` so tests work without the real dsf library.
@@ -490,6 +525,7 @@ git clone --branch v3.6-dev --depth 1 https://github.com/Duet3D/DuetWebControl.g
 | `connect()` `recv(50)` truncates init message (`Unterminated string`) | Patch `connect` to read a full JSON object (`vigil_socket.read_json_object`) |
 | `state.plugins` is a Map | Guard with `instanceof Map` |
 | Plugin dir wiped on upgrade | Use `/opt/dsf/sd/YourPlugin/` |
+| "partially started" after installing an update (SBC daemon not restarted) | Dispatch `machine/startSbcPlugin` from the frontend when `plugin.pid <= 0` (§2.1) |
 | `sbcData` ignored | Use `data` field only |
 | camelCase in Python | dsf-python auto-converts to snake_case |
 | Dict `.get()` on typed objects | Use `getattr(obj, "attr", default)` |
