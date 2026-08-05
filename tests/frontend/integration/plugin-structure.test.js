@@ -44,6 +44,14 @@ describe('Plugin structure', () => {
     it('src/ contains frontend entry point', () => {
         expect(fs.existsSync(path.join(ROOT, 'src/index.js'))).toBe(true)
         expect(fs.existsSync(path.join(ROOT, 'src/VigilDashboard.vue'))).toBe(true)
+        expect(fs.existsSync(path.join(ROOT, 'src/backend.js'))).toBe(true)
+    })
+
+    it('build script excludes the Jest-only DWC stubs from the ZIP', () => {
+        const script = fs.readFileSync(path.join(ROOT, 'scripts/build-zip.js'), 'utf8')
+        for (const stub of ['__mocks__/**', 'routes.js', 'store.js']) {
+            expect(script).toContain(`'${stub}'`)
+        }
     })
 
     it('vigil-daemon.py has shebang line', () => {

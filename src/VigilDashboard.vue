@@ -19,6 +19,24 @@
 
     <v-divider class="mb-4" />
 
+    <!-- Backend down (e.g. right after a plugin update) -->
+    <v-alert v-if="backendRunning === false" type="warning" prominent text class="mb-4">
+      <div class="d-flex flex-wrap align-center">
+        <div class="flex-grow-1 mr-4">
+          <div class="subtitle-1 font-weight-medium">Backend is not running</div>
+          <div class="body-2">
+            The SBC part of this plugin is stopped, so no tracking data can be loaded.
+            This happens after a plugin update — DSF stops the old backend process and
+            does not start the new one.
+          </div>
+        </div>
+        <v-btn color="warning" :loading="startingBackend" @click="startBackend">
+          <v-icon left>mdi-play</v-icon>
+          Start Backend
+        </v-btn>
+      </div>
+    </v-alert>
+
     <!-- Counter tier tabs -->
     <counter-tabs v-model="activeTab" />
 
@@ -98,7 +116,7 @@
     </v-row>
 
     <!-- Loading state -->
-    <div v-else class="text-center py-12">
+    <div v-else-if="backendRunning !== false" class="text-center py-12">
       <v-progress-circular indeterminate size="48" color="primary" />
       <div class="mt-4 text-subtitle-2 grey--text">Loading Vigil data&hellip;</div>
     </div>
@@ -147,10 +165,15 @@ import ExportButton from './components/ExportButton.vue'
 import ServiceResetDialog from './components/ServiceResetDialog.vue'
 import ServiceEventDialog from './components/ServiceEventDialog.vue'
 import ServiceLogDialog from './components/ServiceLogDialog.vue'
+import { isBackendRunning, startBackend } from './backend'
 
 const TIER_KEYS = ['lifetime', 'service', 'session']
 const POLL_INTERVAL = 5000
 const API_BASE = '/machine/Vigil'
+
+// How long to wait for the daemon to register its HTTP endpoints after start
+const BACKEND_WAIT_ATTEMPTS = 15
+const BACKEND_WAIT_INTERVAL = 1000
 
 export default {
     name: 'VigilDashboard',
@@ -172,6 +195,7 @@ export default {
             exporting: false,
             resetting: false,
             savingEvent: false,
+            startingBackend: false,
 
             // Dialogs
             showResetDialog: false,
@@ -192,7 +216,9 @@ export default {
                 const plugins = state.plugins
                 if (plugins instanceof Map) return plugins.get('Vigil')?.data ?? {}
                 return plugins?.Vigil?.data ?? {}
-            }
+            },
+            // true / false, or null while the object model has not reported a PID yet
+            backendRunning: state => isBackendRunning(state)
         }),
         currentTier() {
             if (!this.statusData) return {}
@@ -215,6 +241,12 @@ export default {
         activeTab() {
             if (!this.historyLoaded) {
                 this.loadHistory()
+            }
+        },
+        backendRunning(val, oldVal) {
+            // Pick the data up once the backend comes back (started here or elsewhere)
+            if (val === true && oldVal === false) {
+                this.loadStatus()
             }
         }
     },
@@ -270,6 +302,35 @@ export default {
             } finally {
                 this.loadingHistory = false
             }
+        },
+
+        // --- Backend recovery ---
+        async startBackend() {
+            this.startingBackend = true
+            try {
+                await startBackend(this.$store)
+                if (!await this.waitForBackend()) {
+                    throw new Error('backend did not come up in time')
+                }
+                await this.loadStatus()
+                this.notify('Backend started', 'success')
+            } catch (e) {
+                this.notify(`Failed to start backend: ${e.message || e}`, 'error')
+            } finally {
+                this.startingBackend = false
+            }
+        },
+        async waitForBackend(attempts = BACKEND_WAIT_ATTEMPTS, delay = BACKEND_WAIT_INTERVAL) {
+            // The daemon needs a moment to connect to DSF and register its endpoints
+            for (let i = 0; i < attempts; i++) {
+                try {
+                    await this.apiGet('status')
+                    return true
+                } catch {
+                    await new Promise(resolve => setTimeout(resolve, delay))
+                }
+            }
+            return false
         },
 
         // --- Actions ---

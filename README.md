@@ -33,9 +33,13 @@ Installing a newer ZIP over an existing installation is an *upgrade*: DSF stops 
 SBC daemon, replaces the files, and — by design — does **not** start it again
 (`InstallPlugin` sets `pid = -1`, and the plugin is removed from the DSF autostart
 list). The DWC part stays enabled in your browser settings, so DWC reports the
-plugin as **partially started** until you press **Start** in
-**Settings > Plugins**. Pressing Start also re-adds Vigil to the autostart list, so
-it comes back up after a reboot.
+plugin as **partially started** with all HTTP endpoints returning 404.
+
+Vigil recovers from this on its own: as soon as DWC loads its resources it notices
+the stopped daemon and asks DSF to start it, which also restores the boot autostart
+entry. If that does not work — for example because DSF refused the start — open
+**Plugins → Vigil**; a warning banner with a **Start Backend** button is shown while
+the daemon is down. Pressing **Start** in **Settings > Plugins** does the same thing.
 
 Reload DWC (Ctrl+Shift+R) after the upgrade so the browser picks up the new
 frontend chunks — the file names change with every build.
@@ -47,7 +51,9 @@ frontend chunks — the file names change with every build.
 DWC shows this when the SBC part and the DWC part disagree — either the daemon is
 not running while the DWC part is enabled, or the other way around.
 
-1. **After an upgrade** — expected, see [Updating](#updating). Press **Start**.
+1. **After an upgrade** — expected, see [Updating](#updating). Vigil starts the
+   daemon itself once DWC loads it; reload DWC if the state does not clear, or use
+   the **Start Backend** button on the Vigil page.
 2. **Start does not stick** (state falls back to "partially started" / "stopped"):
    the daemon exited. Vigil logs the reason to stderr, which DSF captures:
    ```bash
@@ -66,8 +72,10 @@ immediately.
 
 ```
 src/                        # Frontend (Vue 2.7 + Vuetify 2.7)
-  index.js                  # Plugin registration
+  index.js                  # Plugin registration, recovers a stopped backend
   VigilDashboard.vue        # Main dashboard view
+  backend.js                # SBC backend state (PID lookup, start, auto-recovery)
+  routes.js / store.js      # Jest-only stubs for DWC's @/routes and @/store
   components/               # UI components (charts, cards, dialogs)
 
 dsf/                        # Backend (Python, runs on SBC)
