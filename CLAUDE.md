@@ -105,6 +105,37 @@ except ImportError:
 ```
 ### 3.4 No `get_file()` / `put_file()` on CommandConnection
 These methods **do not exist**. Use `cmd.resolve_path()` + standard `open()` for all file I/O.
+### 3.5 `BaseConnection.connect()` truncates the server init message
+`connect()` reads the server greeting with a fixed-size `self.socket.recv(50)`. DSF 3.6 sends a
+JSON greeting longer than 50 bytes (e.g. with a GUID `id`), so it is truncated mid-string and
+`json.loads` raises `JSONDecodeError: Unterminated string`. Patch `connect` to read until a full
+JSON object has arrived (see `dsf/vigil_socket.py:read_json_object`), preserving any trailing
+bytes in `self.input`.
+```python
+try:
+    import socket as _socket
+    from dsf.connections.base_connection import BaseConnection as _BaseConnection
+    from dsf.connections.init_messages.server_init_message import ServerInitMessage as _SIM
+    from dsf.connections.exceptions import IncompatibleVersionException as _IVE
+    from vigil_socket import read_json_object as _read_json_object
+
+    def _patched_connect(self, init_message, socket_file):
+        self.socket = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        self.socket.connect(socket_file)
+        self.socket.settimeout(self.timeout if self.timeout > 0 else None)
+        json_string, self.input = _read_json_object(self.socket.recv, self.timeout)
+        sim = _SIM.from_json(json.loads(json_string))
+        if not sim.is_compatible():
+            raise _IVE(f"Incompatible API version (need {sim.PROTOCOL_VERSION}, got {sim.version})")
+        self.id = sim.id
+        self.send(init_message)
+        response = self.receive_response()
+        if not response.success:
+            raise Exception(f"Could not set connection type {init_message.mode}")
+    _BaseConnection.connect = _patched_connect
+except ImportError:
+    pass
+```
 ---
 ## 4. DSF ObjectModel API Rules
 | Pattern | Correct | Wrong |
@@ -456,6 +487,7 @@ git clone --branch v3.6-dev --depth 1 https://github.com/Duet3D/DuetWebControl.g
 | `resolve_path()` returns object | Extract with `getattr(response, "result", response)` |
 | `BoardState` crash on unknown values | Replace enum + add safe setter |
 | `get_file()`/`put_file()` doesn't exist | Use `resolve_path()` + `open()` |
+| `connect()` `recv(50)` truncates init message (`Unterminated string`) | Patch `connect` to read a full JSON object (`vigil_socket.read_json_object`) |
 | `state.plugins` is a Map | Guard with `instanceof Map` |
 | Plugin dir wiped on upgrade | Use `/opt/dsf/sd/YourPlugin/` |
 | `sbcData` ignored | Use `data` field only |
