@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, jest } from '@jest/globals'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { API_BASE, apiBlob, apiGet, apiPost, downloadBlob, waitForBackend } from '../../src/core/api'
 
 function respond(overrides) {
@@ -7,7 +7,7 @@ function respond(overrides) {
 
 describe('daemon API', () => {
     beforeEach(() => {
-        global.fetch = jest.fn().mockResolvedValue(respond())
+        global.fetch = vi.fn().mockResolvedValue(respond())
     })
 
     it('addresses the endpoints DSF serves for this plugin', async () => {
@@ -59,10 +59,10 @@ describe('daemon API', () => {
     })
 
     it('hands a blob to the browser as a download', () => {
-        const click = jest.fn()
-        global.URL.createObjectURL = jest.fn(() => 'blob:vigil')
-        global.URL.revokeObjectURL = jest.fn()
-        jest.spyOn(document, 'createElement').mockReturnValue({ click, set href(v) { this._h = v } })
+        const click = vi.fn()
+        global.URL.createObjectURL = vi.fn(() => 'blob:vigil')
+        global.URL.revokeObjectURL = vi.fn()
+        vi.spyOn(document, 'createElement').mockReturnValue({ click, set href(v) { this._h = v } })
 
         downloadBlob(new Blob(['x']), 'vigil_export.csv')
 

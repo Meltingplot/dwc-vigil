@@ -99,22 +99,27 @@ Data is persisted to `/opt/dsf/sd/Vigil/` using atomic writes with SHA-256 check
 ### Prerequisites
 
 ```bash
-npm ci
+npm ci                      # root: Vue 3 toolchain (vitest, eslint, build helpers)
+npm --prefix tests/ui36 ci  # nested: Vue 2.7 toolchain for the DWC 3.6 shell's tests
 pip install pytest
 ```
 
 ### Tests
 
+The frontend has two test toolchains, because the two UI shells are two Vue majors and
+one `package.json` cannot hold both — the root is the Vue 3 one, since that is what DWC
+3.7's plugin builder reads and installs from.
+
 ```bash
-# Frontend
-npm test
-
-# Linting
-npm run lint
-
-# Backend
-pytest tests/ -v
+npm test          # vitest: src/core/ + src/ui37/ (Vue 3, dwc-plugin-test-kit)
+npm run test:ui36 # jest:   src/ui36/ (Vue 2.7) — nested project in tests/ui36/
+npm run lint      # eslint, Vue 2 rules for ui36/ and Vue 3 rules for the rest
+pytest tests/ -v  # the Python daemon
 ```
+
+`tests/ui36/` has its own `package.json`, lockfile and `node_modules`; `npm run
+test:ui36` does not install them, so run `npm --prefix tests/ui36 ci` once after
+cloning (`scripts/ci-local.sh frontend` does it for you).
 
 ### Building
 
@@ -159,7 +164,7 @@ source trees, built ZIPs) — nothing is installed system-wide.
 ```bash
 scripts/ci-local.sh            # python, frontend, build (default)
 scripts/ci-local.sh python     # pytest in .ci-local/venv
-scripts/ci-local.sh frontend   # npm ci + lint + jest unit + jest integration
+scripts/ci-local.sh frontend   # npm ci + lint + vitest (core, ui37) + jest (ui36)
 scripts/ci-local.sh build36    # DWC 3.6 checkout + stage + build-plugin-pkg + ZIP checks
 scripts/ci-local.sh build      # every build stage
 scripts/ci-local.sh matrix     # pytest on Python 3.10-3.12 via Docker

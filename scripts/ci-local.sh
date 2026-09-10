@@ -17,7 +17,7 @@
 # Stages:
 #   python      pytest (venv, host Python)
 #   matrix      pytest on Python 3.10/3.11/3.12 via Docker (full CI matrix)
-#   frontend    npm ci + lint + jest unit + jest integration
+#   frontend    npm ci + lint + vitest (core, ui37) + jest (ui36)
 #   build36     DWC 3.6 checkout + stage + build-plugin-pkg -> Vigil-<version>-dwc36.zip
 #   build       every build stage (currently just build36)
 #   all         python + frontend + build  (default)
@@ -82,8 +82,11 @@ stage_frontend() {
     cd "$ROOT"
     npm ci
     npm run lint
-    npm run test:unit
-    npm run test:integration
+    # src/core/ and src/ui37/ — Vue 3, vitest, dwc-plugin-test-kit
+    npm test
+    # src/ui36/ — Vue 2.7, Jest, in its own nested project with its own lockfile
+    (cd "$ROOT/tests/ui36" && npm ci)
+    npm run test:ui36
     ok "Frontend lint & tests passed"
 }
 

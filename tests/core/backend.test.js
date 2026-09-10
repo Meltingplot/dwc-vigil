@@ -1,4 +1,4 @@
-import { describe, it, expect, jest } from '@jest/globals'
+import { describe, it, expect, vi } from 'vitest'
 import {
     PLUGIN_ID,
     getPluginEntry,
@@ -19,7 +19,7 @@ function modelWithMap(plugin) {
 function fakeHost(model, startBackendImpl) {
     return {
         pluginEntry: () => getPluginEntry(model),
-        startBackend: startBackendImpl || jest.fn().mockResolvedValue(undefined),
+        startBackend: startBackendImpl || vi.fn().mockResolvedValue(undefined),
     }
 }
 
@@ -77,7 +77,7 @@ describe('backend helpers', () => {
         })
 
         it('resolves even when the host returns a non-promise', async () => {
-            const host = fakeHost(modelWithMap({ pid: -1 }), jest.fn().mockReturnValue(undefined))
+            const host = fakeHost(modelWithMap({ pid: -1 }), vi.fn().mockReturnValue(undefined))
             await expect(startBackend(host)).resolves.toBeUndefined()
         })
     })
@@ -107,7 +107,7 @@ describe('backend helpers', () => {
         })
 
         it('treats a throwing host read as "no object model"', async () => {
-            const startBackendImpl = jest.fn()
+            const startBackendImpl = vi.fn()
             await expect(ensureBackendRunning({
                 pluginEntry: () => { throw new Error('not connected') },
                 startBackend: startBackendImpl,
@@ -136,8 +136,8 @@ describe('backend helpers', () => {
         })
 
         it('resolves false when starting the backend fails', async () => {
-            const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
-            const host = fakeHost(modelWithMap({ pid: -1 }), jest.fn().mockRejectedValue(new Error('denied')))
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+            const host = fakeHost(modelWithMap({ pid: -1 }), vi.fn().mockRejectedValue(new Error('denied')))
             await expect(ensureBackendRunning(host)).resolves.toBe(false)
             expect(warn).toHaveBeenCalled()
             warn.mockRestore()

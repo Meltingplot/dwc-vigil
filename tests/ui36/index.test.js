@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from '@jest/globals'
 
 jest.mock('@/routes')
 
-describe('Plugin registration (index.js)', () => {
+describe('DWC 3.6 plugin registration (ui36/index.js)', () => {
     let registerRoute
 
     beforeEach(() => {
@@ -10,7 +10,7 @@ describe('Plugin registration (index.js)', () => {
         jest.mock('@/routes')
         registerRoute = require('@/routes').registerRoute
         registerRoute.mockClear()
-        require('../../../src/ui36/index.js')
+        require('../../src/ui36/index.js')
     })
 
     it('calls registerRoute exactly once', () => {

@@ -57,6 +57,9 @@ jobs:
         with:
           node-version: "18"
           cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            tests/ui36/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -64,11 +67,15 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Unit tests
-        run: npx jest tests/frontend/*.test.js --verbose
+      - name: Tests (core + DWC 3.7 shell)
+        run: npm test
 
-      - name: Integration tests
-        run: npx jest tests/frontend/integration/ --verbose
+      - name: Install DWC 3.6 test project dependencies
+        working-directory: tests/ui36
+        run: npm ci
+
+      - name: Tests (DWC 3.6 shell)
+        run: npm run test:ui36
 
   release:
     name: Build & Publish Release

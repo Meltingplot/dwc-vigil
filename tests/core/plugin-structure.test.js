@@ -1,8 +1,12 @@
-import { describe, it, expect } from '@jest/globals'
-import fs from 'fs'
-import path from 'path'
+// @vitest-environment node
+// Filesystem-only assertions about the repo layout — happy-dom would serve
+// import.meta.url as an http: URL, which fileURLToPath cannot resolve.
+import { describe, it, expect } from 'vitest'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = path.resolve(__dirname, '../../..')
+const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 
 describe('Plugin structure', () => {
     it('plugin.json is valid JSON', () => {
@@ -63,7 +67,7 @@ describe('Plugin structure', () => {
             expect(fs.existsSync(path.join(ROOT, 'src', stub))).toBe(false)
         }
         for (const stub of ['routes.js', 'store.js']) {
-            expect(fs.existsSync(path.join(ROOT, 'tests/frontend/dwc-stubs', stub))).toBe(true)
+            expect(fs.existsSync(path.join(ROOT, 'tests/ui36/dwc-stubs', stub))).toBe(true)
         }
     })
 
