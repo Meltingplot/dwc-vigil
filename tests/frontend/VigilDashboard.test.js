@@ -1,40 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
-import { shallowMount, createLocalVue } from '@vue/test-utils'
-import Vuex from 'vuex'
+import { shallowMount } from '@vue/test-utils'
 import VigilDashboard from '../../src/VigilDashboard.vue'
 
-const localVue = createLocalVue()
-localVue.use(Vuex)
-
-function createStore(options = {}) {
-    const plugin = { data: options.pluginData || {} }
-    if (options.pid !== undefined) {
-        plugin.pid = options.pid
+// A HostAdapter (src/core/host.js) the way the real 3.6/3.7 adapters behave:
+// pluginEntry() is undefined without an object model, null without an entry.
+function fakeHost(options = {}) {
+    const entry = options.pid === undefined ? null : { pid: options.pid }
+    return {
+        pluginEntry: jest.fn(() => (options.noModel ? undefined : entry)),
+        startBackend: options.startBackend || jest.fn().mockResolvedValue(undefined),
     }
-    return new Vuex.Store({
-        modules: {
-            'machine/model': {
-                namespaced: true,
-                state: {
-                    plugins: new Map([['Vigil', plugin]])
-                }
-            },
-            machine: {
-                namespaced: true,
-                actions: {
-                    startSbcPlugin: options.startSbcPlugin || jest.fn()
-                }
-            }
-        }
-    })
 }
 
 function mountDashboard(options = {}) {
-    return shallowMount(VigilDashboard, {
-        localVue,
-        store: createStore(options),
+    const host = fakeHost(options)
+    const wrapper = shallowMount(VigilDashboard, {
+        propsData: { host },
         vuetify: createVuetify()
     })
+    return { wrapper, host }
 }
 
 function mockFetchSuccess(data) {
@@ -75,62 +59,66 @@ describe('VigilDashboard backend recovery', () => {
 
     describe('backendRunning', () => {
         it('is null while the object model reports no PID', () => {
-            wrapper = mountDashboard()
+            ({ wrapper } = mountDashboard())
+            expect(wrapper.vm.backendRunning).toBeNull()
+        })
+
+        it('is null while there is no object model at all', () => {
+            ({ wrapper } = mountDashboard({ noModel: true }))
             expect(wrapper.vm.backendRunning).toBeNull()
         })
 
         it('is true when the SBC process is running', () => {
-            wrapper = mountDashboard({ pid: 4711 })
+            ({ wrapper } = mountDashboard({ pid: 4711 }))
             expect(wrapper.vm.backendRunning).toBe(true)
         })
 
         it('is false after an update left the process stopped', () => {
-            wrapper = mountDashboard({ pid: -1 })
+            ({ wrapper } = mountDashboard({ pid: -1 }))
             expect(wrapper.vm.backendRunning).toBe(false)
         })
     })
 
     describe('warning banner', () => {
         it('is shown when the backend is stopped', async () => {
-            wrapper = mountDashboard({ pid: -1 })
+            ({ wrapper } = mountDashboard({ pid: -1 }))
             await wrapper.vm.$nextTick()
             expect(wrapper.text()).toContain('Backend is not running')
         })
 
         it('is hidden when the backend runs', async () => {
-            wrapper = mountDashboard({ pid: 4711 })
+            ({ wrapper } = mountDashboard({ pid: 4711 }))
             await wrapper.vm.$nextTick()
             expect(wrapper.text()).not.toContain('Backend is not running')
         })
 
         it('is hidden while the PID is unknown', async () => {
-            wrapper = mountDashboard()
+            ({ wrapper } = mountDashboard())
             await wrapper.vm.$nextTick()
             expect(wrapper.text()).not.toContain('Backend is not running')
         })
 
         it('replaces the loading spinner while the backend is down', async () => {
-            wrapper = mountDashboard({ pid: -1 })
+            ({ wrapper } = mountDashboard({ pid: -1 }))
             await wrapper.vm.$nextTick()
             expect(wrapper.text()).not.toContain('Loading Vigil data')
         })
     })
 
     describe('startBackend', () => {
-        it('dispatches machine/startSbcPlugin and reports success', async () => {
-            const startSbcPlugin = jest.fn()
-            wrapper = mountDashboard({ pid: -1, startSbcPlugin })
+        it('asks the host to start the backend and reports success', async () => {
+            let host
+            ({ wrapper, host } = mountDashboard({ pid: -1 }))
 
             await wrapper.vm.startBackend()
 
-            expect(startSbcPlugin).toHaveBeenCalled()
-            expect(startSbcPlugin.mock.calls[0][1]).toBe('Vigil')
+            expect(host.startBackend).toHaveBeenCalled()
             expect(wrapper.vm.snackbar.color).toBe('success')
             expect(wrapper.vm.startingBackend).toBe(false)
         })
 
         it('sets startingBackend during the operation', async () => {
-            wrapper = mountDashboard({ pid: -1 })
+            ({ wrapper } = mountDashboard({ pid: -1 }))
 
             const promise = wrapper.vm.startBackend()
             expect(wrapper.vm.startingBackend).toBe(true)
@@ -139,10 +127,10 @@ describe('VigilDashboard backend recovery', () => {
         })
 
         it('reports an error when DSF refuses to start the plugin', async () => {
-            const startSbcPlugin = jest.fn(() => {
+            const startBackend = jest.fn(() => {
                 throw new Error('Incompatible DSF version')
-            })
-            wrapper = mountDashboard({ pid: -1, startSbcPlugin })
+            });
+            ({ wrapper } = mountDashboard({ pid: -1, startBackend }))
 
             await wrapper.vm.startBackend()
 
@@ -152,7 +140,7 @@ describe('VigilDashboard backend recovery', () => {
         })
 
         it('reports an error when the endpoints never come up', async () => {
-            wrapper = mountDashboard({ pid: -1 })
+            ({ wrapper } = mountDashboard({ pid: -1 }))
             jest.spyOn(wrapper.vm, 'waitForBackend').mockResolvedValue(false)
 
             await wrapper.vm.startBackend()
@@ -164,7 +152,7 @@ describe('VigilDashboard backend recovery', () => {
 
     describe('waitForBackend', () => {
         it('returns true as soon as /status answers', async () => {
-            wrapper = mountDashboard()
+            ({ wrapper } = mountDashboard())
             await flushPromises()
 
             mockFetchSuccess({})
@@ -173,7 +161,7 @@ describe('VigilDashboard backend recovery', () => {
         })
 
         it('retries and returns false when /status keeps failing', async () => {
-            wrapper = mountDashboard()
+            ({ wrapper } = mountDashboard())
             await flushPromises()
 
             mockFetchError(404, 'Not Found')

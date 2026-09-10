@@ -96,6 +96,8 @@
 </template>
 
 <script>
+import { formatBytes, formatDuration, formatTemp, formatVoltage } from '../core/format'
+
 export default {
     name: 'VitalsCard',
     props: {
@@ -129,32 +131,11 @@ export default {
         },
     },
     methods: {
-        formatTemp(val) {
-            if (val == null) return '\u2014'
-            return `${val.toFixed(1)} \u00B0C`
-        },
-        formatVoltage(val) {
-            if (val == null) return '\u2014'
-            return `${val.toFixed(2)} V`
-        },
-        formatBytes(bytes) {
-            if (bytes == null) return '\u2014'
-            if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`
-            if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(0)} MB`
-            return `${(bytes / 1024).toFixed(0)} KB`
-        },
-        formatDuration(seconds) {
-            if (seconds == null) return '\u2014'
-            const days = Math.floor(seconds / 86400)
-            const hours = Math.floor((seconds % 86400) / 3600)
-            const minutes = Math.floor((seconds % 3600) / 60)
-            const parts = []
-            if (days > 0) parts.push(`${days}d`)
-            if (hours > 0 || days > 0) parts.push(`${hours}h`)
-            parts.push(`${minutes}m`)
-            return parts.join(' ')
-        },
-    }
+        formatTemp,
+        formatVoltage,
+        formatBytes,
+        formatDuration,
+    },
 }
 </script>
 

@@ -33,6 +33,8 @@
 </template>
 
 <script>
+import { formatDistance } from '../core/format'
+
 export default {
     name: 'AxisTable',
     props: {
@@ -48,31 +50,20 @@ export default {
 
             for (const [axis, mm] of Object.entries(this.axes)) {
                 if (axis.startsWith('E')) continue
-                rows.push({ axis, formatted: this.formatDistance(mm), isExtruder: false })
+                rows.push({ axis, formatted: formatDistance(mm), isExtruder: false })
             }
 
             for (const [axis, mm] of Object.entries(this.axes)) {
                 if (!axis.startsWith('E')) continue
-                rows.push({ axis: `${axis} (total)`, formatted: this.formatDistance(mm), isExtruder: true })
+                rows.push({ axis: `${axis} (total)`, formatted: formatDistance(mm), isExtruder: true })
             }
 
             for (const [ext, mm] of Object.entries(this.filament)) {
-                rows.push({ axis: `${ext} (filament)`, formatted: this.formatDistance(mm), isExtruder: true })
+                rows.push({ axis: `${ext} (filament)`, formatted: formatDistance(mm), isExtruder: true })
             }
 
             return rows
         }
     },
-    methods: {
-        formatDistance(mm) {
-            if (mm >= 1000000) {
-                return `${(mm / 1000000).toFixed(2)} km`
-            }
-            if (mm >= 1000) {
-                return `${(mm / 1000).toFixed(2)} m`
-            }
-            return `${mm.toFixed(0)} mm`
-        }
-    }
 }
 </script>

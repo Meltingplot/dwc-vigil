@@ -44,7 +44,8 @@ describe('Plugin structure', () => {
     it('src/ contains frontend entry point', () => {
         expect(fs.existsSync(path.join(ROOT, 'src/index.js'))).toBe(true)
         expect(fs.existsSync(path.join(ROOT, 'src/VigilDashboard.vue'))).toBe(true)
-        expect(fs.existsSync(path.join(ROOT, 'src/backend.js'))).toBe(true)
+        expect(fs.existsSync(path.join(ROOT, 'src/core/backend.js'))).toBe(true)
+        expect(fs.existsSync(path.join(ROOT, 'src/host.js'))).toBe(true)
     })
 
     it('build script excludes the Jest-only DWC stubs from the ZIP', () => {

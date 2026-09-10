@@ -8,11 +8,15 @@
  * process and drops the plugin from the auto-start list. InstallPlugin then
  * re-registers the plugin with Pid = -1 but never starts it again — DWC only
  * issues StartPlugin when the ZIP was uploaded via "Upload & Start", which is
- * not the case for the "Install Plugin" button on Settings -> Plugins.
+ * not the case for the "Install Plugin" button on Settings -> Plugins (3.6) or
+ * an install wizard run with "start when finished" unticked (3.7).
  *
  * The result is a plugin whose DWC resources are loaded while its backend is
  * dead — exactly what DWC labels "partially started", and why every HTTP
  * endpoint of this plugin returns 404 until the backend is started manually.
+ *
+ * Everything here works off a {@link HostAdapter} (see ./host.js) rather than a
+ * store, so the same code serves the DWC 3.6 and 3.7 shells unchanged.
  */
 
 /** Identifier of this plugin as registered with DSF and DWC. */
@@ -25,16 +29,20 @@ const DEFAULT_INTERVAL = 1500
 const DEFAULT_MAX_ATTEMPTS = 20
 
 /**
- * Read this plugin's entry from the machine object model.
+ * Read this plugin's entry out of a machine object model.
  *
- * In DWC 3.6 `state.plugins` is a Map keyed by plugin ID; tests may use a
- * plain object instead.
+ * `model.plugins` is a Map keyed by plugin ID on both DWC generations; tests may
+ * pass a plain object instead.
  *
- * @param {object} modelState State of the `machine/model` Vuex module
- * @returns {object|null} The Plugin object, or null if not present
+ * @param {object|null|undefined} model The machine object model
+ * @returns {object|null|undefined} The Plugin object, null when the model carries
+ *   no entry for this plugin, or undefined when there is no object model at all
  */
-export function getPluginEntry(modelState) {
-    const plugins = modelState && modelState.plugins
+export function getPluginEntry(model) {
+    if (!model) {
+        return undefined
+    }
+    const plugins = model.plugins
     if (!plugins) {
         return null
     }
@@ -48,15 +56,14 @@ export function getPluginEntry(modelState) {
  * DSF reports the process ID in `Plugin.pid`: -1 while the plugin is stopped,
  * 0 while it is shutting down, and the real PID while it runs.
  *
- * @param {object} modelState State of the `machine/model` Vuex module
+ * @param {object|null|undefined} pluginEntry This plugin's object model entry
  * @returns {boolean|null} true/false, or null when the state is not yet known
  */
-export function isBackendRunning(modelState) {
-    const plugin = getPluginEntry(modelState)
-    if (!plugin || typeof plugin.pid !== 'number') {
+export function isBackendRunning(pluginEntry) {
+    if (!pluginEntry || typeof pluginEntry.pid !== 'number') {
         return null
     }
-    return plugin.pid > 0
+    return pluginEntry.pid > 0
 }
 
 /**
@@ -65,11 +72,11 @@ export function isBackendRunning(modelState) {
  * DSF's StartPlugin defaults to SaveState = true, so starting the backend also
  * restores the boot auto-start entry that the upgrade removed.
  *
- * @param {object} store Root Vuex store
+ * @param {HostAdapter} host DWC host adapter
  * @returns {Promise<void>}
  */
-export function startBackend(store) {
-    return Promise.resolve(store.dispatch('machine/startSbcPlugin', PLUGIN_ID))
+export function startBackend(host) {
+    return Promise.resolve(host.startBackend())
 }
 
 /**
@@ -77,21 +84,20 @@ export function startBackend(store) {
  *
  * The object model may not be populated at the time DWC loads plugin
  * resources, so this polls until the plugin entry shows up. It gives up
- * immediately when there is no machine module at all (e.g. in unit tests).
+ * immediately when the host reports no object model at all (`undefined`),
+ * which is the case outside a connected DWC — e.g. in unit tests.
  *
- * @param {object} store Root Vuex store
+ * @param {HostAdapter} host DWC host adapter
  * @param {object} [options] Polling options
  * @param {number} [options.interval] Delay between attempts in ms
  * @param {number} [options.maxAttempts] Attempts before giving up
  * @returns {Promise<boolean>} Whether a start was issued
  */
-export function ensureBackendRunning(store, options = {}) {
+export function ensureBackendRunning(host, options = {}) {
     const interval = options.interval || DEFAULT_INTERVAL
     const maxAttempts = options.maxAttempts || DEFAULT_MAX_ATTEMPTS
 
-    const machine = store && store.state && store.state.machine
-    if (!machine || !machine.model) {
-        // No machine module — nothing to inspect and nothing to start
+    if (!host || typeof host.pluginEntry !== 'function') {
         return Promise.resolve(false)
     }
 
@@ -101,12 +107,20 @@ export function ensureBackendRunning(store, options = {}) {
         const check = () => {
             attempts++
 
-            let running = null
+            let entry
             try {
-                running = isBackendRunning(store.state.machine.model)
+                entry = host.pluginEntry()
             } catch {
-                running = null
+                entry = undefined
             }
+
+            if (entry === undefined) {
+                // No machine object model — nothing to inspect and nothing to start
+                resolve(false)
+                return
+            }
+
+            const running = isBackendRunning(entry)
 
             if (running === true) {
                 resolve(false)
@@ -114,7 +128,7 @@ export function ensureBackendRunning(store, options = {}) {
             }
 
             if (running === false) {
-                startBackend(store).then(
+                startBackend(host).then(
                     () => resolve(true),
                     err => {
                         // eslint-disable-next-line no-console

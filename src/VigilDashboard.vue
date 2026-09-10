@@ -152,7 +152,6 @@
 </template>
 
 <script>
-import { mapState } from 'vuex'
 import CounterTabs from './components/CounterTabs.vue'
 import StatCard from './components/StatCard.vue'
 import JobsPieChart from './components/JobsPieChart.vue'
@@ -165,15 +164,12 @@ import ExportButton from './components/ExportButton.vue'
 import ServiceResetDialog from './components/ServiceResetDialog.vue'
 import ServiceEventDialog from './components/ServiceEventDialog.vue'
 import ServiceLogDialog from './components/ServiceLogDialog.vue'
-import { isBackendRunning, startBackend } from './backend'
+import { apiBlob, apiGet, apiPost, downloadBlob, waitForBackend } from './core/api'
+import { isBackendRunning, startBackend } from './core/backend'
+import { createHost } from './host'
 
 const TIER_KEYS = ['lifetime', 'service', 'session']
 const POLL_INTERVAL = 5000
-const API_BASE = '/machine/Vigil'
-
-// How long to wait for the daemon to register its HTTP endpoints after start
-const BACKEND_WAIT_ATTEMPTS = 15
-const BACKEND_WAIT_INTERVAL = 1000
 
 export default {
     name: 'VigilDashboard',
@@ -181,6 +177,11 @@ export default {
         CounterTabs, StatCard, JobsPieChart, HeaterChart, FanChart,
         AxisTable, VitalsCard, HistoryChart, ExportButton,
         ServiceResetDialog, ServiceEventDialog, ServiceLogDialog,
+    },
+    props: {
+        // The DWC seam (see core/host.js). Injectable so the component can be
+        // mounted against a fake host in tests; DWC itself never passes it.
+        host: { type: Object, default: () => createHost() },
     },
     data() {
         return {
@@ -211,15 +212,12 @@ export default {
         }
     },
     computed: {
-        ...mapState('machine/model', {
-            pluginData: state => {
-                const plugins = state.plugins
-                if (plugins instanceof Map) return plugins.get('Vigil')?.data ?? {}
-                return plugins?.Vigil?.data ?? {}
-            },
-            // true / false, or null while the object model has not reported a PID yet
-            backendRunning: state => isBackendRunning(state)
-        }),
+        // true / false, or null while the object model has not reported a PID yet.
+        // host.pluginEntry() reads through the store, so this stays reactive.
+        backendRunning() {
+            const entry = this.host.pluginEntry()
+            return entry === undefined ? null : isBackendRunning(entry)
+        },
         currentTier() {
             if (!this.statusData) return {}
             return this.statusData[TIER_KEYS[this.activeTab]] || {}
@@ -258,32 +256,10 @@ export default {
         if (this.pollTimer) clearInterval(this.pollTimer)
     },
     methods: {
-        // --- API helpers ---
-        async apiGet(endpoint) {
-            const resp = await fetch(`${API_BASE}/${endpoint}`)
-            if (!resp.ok) {
-                const body = await resp.json().catch(() => ({}))
-                throw new Error(body.error || resp.statusText || 'Request failed')
-            }
-            return resp.json()
-        },
-        async apiPost(endpoint, data = {}) {
-            const resp = await fetch(`${API_BASE}/${endpoint}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data),
-            })
-            if (!resp.ok) {
-                const body = await resp.json().catch(() => ({}))
-                throw new Error(body.error || resp.statusText || 'Request failed')
-            }
-            return resp.json()
-        },
-
         // --- Data loading ---
         async loadStatus() {
             try {
-                this.statusData = await this.apiGet('status')
+                this.statusData = await apiGet('status')
                 if (!this.historyLoaded) {
                     this.loadHistory()
                 }
@@ -294,7 +270,7 @@ export default {
         async loadHistory() {
             this.loadingHistory = true
             try {
-                const result = await this.apiGet('history?days=30')
+                const result = await apiGet('history?days=30')
                 this.historyDays = result.days || []
                 this.historyLoaded = true
             } catch {
@@ -308,7 +284,7 @@ export default {
         async startBackend() {
             this.startingBackend = true
             try {
-                await startBackend(this.$store)
+                await startBackend(this.host)
                 if (!await this.waitForBackend()) {
                     throw new Error('backend did not come up in time')
                 }
@@ -320,17 +296,9 @@ export default {
                 this.startingBackend = false
             }
         },
-        async waitForBackend(attempts = BACKEND_WAIT_ATTEMPTS, delay = BACKEND_WAIT_INTERVAL) {
-            // The daemon needs a moment to connect to DSF and register its endpoints
-            for (let i = 0; i < attempts; i++) {
-                try {
-                    await this.apiGet('status')
-                    return true
-                } catch {
-                    await new Promise(resolve => setTimeout(resolve, delay))
-                }
-            }
-            return false
+        // Thin wrapper so tests can stub the wait without stubbing global fetch
+        waitForBackend(attempts, delay) {
+            return waitForBackend(attempts, delay)
         },
 
         // --- Actions ---
@@ -338,13 +306,11 @@ export default {
             this.exporting = true
             try {
                 if (format === 'csv') {
-                    const resp = await fetch(`${API_BASE}/export?format=csv`)
-                    const blob = await resp.blob()
-                    this.downloadBlob(blob, 'vigil_export.csv')
+                    downloadBlob(await apiBlob('export?format=csv'), 'vigil_export.csv')
                 } else {
-                    const data = await this.apiGet('export?format=json')
+                    const data = await apiGet('export?format=json')
                     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-                    this.downloadBlob(blob, 'vigil_export.json')
+                    downloadBlob(blob, 'vigil_export.json')
                 }
                 this.notify('Export complete', 'success')
             } catch (e) {
@@ -357,7 +323,7 @@ export default {
         async handleReset(resetData) {
             this.resetting = true
             try {
-                await this.apiPost('service/reset', resetData)
+                await apiPost('service/reset', resetData)
                 this.showResetDialog = false
                 this.notify('Counter reset successful', 'success')
                 await this.loadStatus()
@@ -371,7 +337,7 @@ export default {
         async handleServiceEvent(eventData) {
             this.savingEvent = true
             try {
-                await this.apiPost('service/event', eventData)
+                await apiPost('service/event', eventData)
                 this.showEventDialog = false
                 this.notify('Service event logged', 'success')
             } catch (e) {
@@ -385,7 +351,7 @@ export default {
             this.showLogDialog = true
             this.loadingLog = true
             try {
-                const result = await this.apiGet('service/log')
+                const result = await apiGet('service/log')
                 this.serviceLogEntries = result.log || []
             } catch (e) {
                 this.notify(`Failed to load service log: ${e.message}`, 'error')
@@ -395,14 +361,6 @@ export default {
         },
 
         // --- Helpers ---
-        downloadBlob(blob, filename) {
-            const url = URL.createObjectURL(blob)
-            const a = document.createElement('a')
-            a.href = url
-            a.download = filename
-            a.click()
-            URL.revokeObjectURL(url)
-        },
         notify(text, color = 'success') {
             this.snackbar = { show: true, text, color }
         },

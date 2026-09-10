@@ -1,9 +1,9 @@
 'use strict'
 
 import { registerRoute } from '@/routes'
-import store from '@/store'
 import VigilDashboard from './VigilDashboard.vue'
-import { ensureBackendRunning } from './backend'
+import { ensureBackendRunning } from './core/backend'
+import { createHost } from './host'
 
 registerRoute(VigilDashboard, {
     Plugins: {
@@ -20,4 +20,4 @@ registerRoute(VigilDashboard, {
 // without starting the new one, which leaves the plugin "partially started"
 // and all of its HTTP endpoints unreachable. Recover from that as soon as DWC
 // loads our resources.
-ensureBackendRunning(store)
+ensureBackendRunning(createHost())

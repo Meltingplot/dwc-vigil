@@ -10,6 +10,8 @@
 </template>
 
 <script>
+import { formatDuration, formatNumber } from '../core/format'
+
 const COLOR_MAP = {
     blue: '#1976D2',
     green: '#4CAF50',
@@ -30,28 +32,12 @@ export default {
     },
     computed: {
         formattedValue() {
-            if (this.type === 'time') {
-                return this.formatDuration(this.value)
-            }
-            return this.value.toLocaleString()
+            return this.type === 'time' ? formatDuration(this.value) : formatNumber(this.value)
         },
         accentColor() {
             return COLOR_MAP[this.color] || COLOR_MAP.blue
         },
     },
-    methods: {
-        formatDuration(seconds) {
-            const days = Math.floor(seconds / 86400)
-            const hours = Math.floor((seconds % 86400) / 3600)
-            const minutes = Math.floor((seconds % 3600) / 60)
-
-            const parts = []
-            if (days > 0) parts.push(`${days}d`)
-            if (hours > 0 || days > 0) parts.push(`${hours}h`)
-            parts.push(`${minutes}m`)
-            return parts.join(' ')
-        }
-    }
 }
 </script>
 
