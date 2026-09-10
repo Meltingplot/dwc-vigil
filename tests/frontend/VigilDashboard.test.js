@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
 import { shallowMount } from '@vue/test-utils'
-import VigilDashboard from '../../src/VigilDashboard.vue'
+import VigilDashboard from '../../src/ui36/VigilDashboard.vue'
 
 // A HostAdapter (src/core/host.js) the way the real 3.6/3.7 adapters behave:
 // pluginEntry() is undefined without an object model, null without an entry.

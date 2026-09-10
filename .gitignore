@@ -211,3 +211,8 @@ __marimo__/
 
 # Local CI runner workspace
 .ci-local/
+
+# Plugin build outputs
+# The DWC 3.7 builder writes into the plugin directory, i.e. the repo root
+/pkg/
+/Vigil-*.zip

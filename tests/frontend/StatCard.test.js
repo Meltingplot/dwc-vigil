@@ -1,6 +1,6 @@
 import { describe, it, expect } from '@jest/globals'
 import { shallowMount } from '@vue/test-utils'
-import StatCard from '../../src/components/StatCard.vue'
+import StatCard from '../../src/ui36/components/StatCard.vue'
 
 describe('StatCard', () => {
     const vuetify = createVuetify()

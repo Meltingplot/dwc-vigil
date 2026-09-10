@@ -6,7 +6,8 @@
  *   1. Jest can resolve the @/routes import via moduleNameMapper
  *   2. Integration tests can verify the plugin's registration call
  *
- * This file is NOT included in the plugin ZIP — DWC provides the real one.
+ * It lives under tests/ so nothing DWC-shaped is ever compiled into a plugin build:
+the DWC 3.7 builder is pointed straight at the repo and copies all of src/.
  */
 export function registerRoute() {
     throw new Error(

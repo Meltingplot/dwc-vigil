@@ -61,8 +61,8 @@ jobs:
       - name: Integration tests
         run: npx jest tests/frontend/integration/ --verbose
 
-  build:
-    name: Build Plugin ZIP
+  build-dwc36:
+    name: Build Plugin ZIP (DWC 3.6)
     runs-on: ubuntu-latest
     needs: [python-tests, frontend-tests]
 
@@ -90,25 +90,63 @@ jobs:
         working-directory: DuetWebControl
         run: npm install
 
-      - name: Compute version from git
+      # The staging script vendors packages out of the plugin's own node_modules,
+      # so the root install is a prerequisite of the 3.6 build, not just of the tests.
+      - name: Install plugin dependencies
         working-directory: plugin
-        run: node scripts/version.js --write
+        run: npm ci
+
+      # Cheap safety net for src/ui36/: the repo's own toolchain cannot parse a Vue 2
+      # SFC, so this borrows the 3.6 checkout's compiler. Runs here because this is
+      # the job that already has that checkout installed.
+      - name: Compile-check the DWC 3.6 SFCs
+        working-directory: plugin
+        env:
+          DWC36_DIR: ${{ github.workspace }}/DuetWebControl
+        run: npm run check-ui36
+
+      - name: Compute version from git
+        id: version
+        working-directory: plugin
+        run: |
+          version=$(node scripts/version.js --write | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The 3.6 builder copies the whole of <pluginDir>/src, so it must never see the
+      # repo itself once src/ui37/ exists: stage a tree holding only core/ and ui36/.
+      - name: Stage the DWC 3.6 source tree
+        working-directory: plugin
+        run: node scripts/stage-dwc36.mjs "$RUNNER_TEMP/stage-36"
 
       - name: Build plugin
         working-directory: DuetWebControl
-        run: npm run build-plugin ../plugin
+        run: npm run build-plugin-pkg -- "$RUNNER_TEMP/stage-36"
 
-      - name: Verify build output
-        run: ls DuetWebControl/dist/Vigil-*.zip
-
-      - name: Extract plugin ZIP for artifact upload
+      - name: Name the ZIP after its DWC generation
+        id: zip
         run: |
-          mkdir -p artifact-content
-          unzip DuetWebControl/dist/Vigil-*.zip -d artifact-content
+          src="DuetWebControl/dist/Vigil-${{ steps.version.outputs.version }}.zip"
+          test -f "$src" || { echo "::error::$src was not built"; exit 1; }
+          out="Vigil-${{ steps.version.outputs.version }}-dwc36.zip"
+          mv "$src" "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      # GitHub wraps every uploaded artifact in a ZIP of its own, so uploading the
+      # plugin ZIP as-is would yield a ZIP-in-ZIP that DWC refuses to install.
+      # Upload the unpacked tree instead; the download is then directly installable.
+      - name: Unpack plugin ZIP for artifact upload
+        run: |
+          mkdir -p artifact-dwc36
+          unzip "${{ steps.zip.outputs.path }}" -d artifact-dwc36
+          test -f artifact-dwc36/plugin.json || { echo "::error::plugin.json is not at the ZIP root"; exit 1; }
+          if unzip -Z1 "${{ steps.zip.outputs.path }}" | grep -qE '\.zip$'; then
+            echo "::error::plugin ZIP contains a nested *.zip entry"
+            exit 1
+          fi
 
       - name: Upload plugin ZIP
         uses: actions/upload-artifact@v7
         with:
-          name: Vigil-plugin
-          path: artifact-content/*
+          name: Vigil-dwc36
+          path: artifact-dwc36/*
           retention-days: 30

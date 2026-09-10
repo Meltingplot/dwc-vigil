@@ -9,7 +9,7 @@
  */
 
 import store from '@/store'
-import { PLUGIN_ID, getPluginEntry } from './core/backend'
+import { PLUGIN_ID, getPluginEntry } from '../core/backend'
 
 /**
  * @returns {HostAdapter}

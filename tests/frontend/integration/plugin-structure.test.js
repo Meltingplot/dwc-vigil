@@ -41,17 +41,39 @@ describe('Plugin structure', () => {
         }
     })
 
-    it('src/ contains frontend entry point', () => {
+    it('src/ carries the builder entry point and the shared core', () => {
+        // Both DWC builders always compile src/index.js
         expect(fs.existsSync(path.join(ROOT, 'src/index.js'))).toBe(true)
-        expect(fs.existsSync(path.join(ROOT, 'src/VigilDashboard.vue'))).toBe(true)
-        expect(fs.existsSync(path.join(ROOT, 'src/core/backend.js'))).toBe(true)
-        expect(fs.existsSync(path.join(ROOT, 'src/host.js'))).toBe(true)
+        for (const file of ['host.js', 'backend.js', 'api.js', 'format.js']) {
+            expect(fs.existsSync(path.join(ROOT, 'src/core', file))).toBe(true)
+        }
     })
 
-    it('build script excludes the Jest-only DWC stubs from the ZIP', () => {
-        const script = fs.readFileSync(path.join(ROOT, 'scripts/build-zip.js'), 'utf8')
-        for (const stub of ['__mocks__/**', 'routes.js', 'store.js']) {
-            expect(script).toContain(`'${stub}'`)
+    it('src/ui36/ carries the complete DWC 3.6 shell', () => {
+        for (const file of ['index.js', 'host.js', 'VigilDashboard.vue']) {
+            expect(fs.existsSync(path.join(ROOT, 'src/ui36', file))).toBe(true)
+        }
+        expect(fs.readdirSync(path.join(ROOT, 'src/ui36/components')).length).toBeGreaterThan(0)
+    })
+
+    it('keeps the Jest-only DWC stubs out of src/', () => {
+        // The DWC 3.7 builder is pointed straight at the repo and compiles all of
+        // src/; a stray @/routes or @/store stub there would shadow DWC's own.
+        for (const stub of ['routes.js', 'store.js', '__mocks__']) {
+            expect(fs.existsSync(path.join(ROOT, 'src', stub))).toBe(false)
+        }
+        for (const stub of ['routes.js', 'store.js']) {
+            expect(fs.existsSync(path.join(ROOT, 'tests/frontend/dwc-stubs', stub))).toBe(true)
+        }
+    })
+
+    it('has no framework-specific import in src/core/', () => {
+        // core/ is shipped to both generations verbatim, so it must not reach for
+        // a store, a Vue runtime or a DWC module — that is the host adapter's job.
+        const dir = path.join(ROOT, 'src/core')
+        for (const file of fs.readdirSync(dir)) {
+            const source = fs.readFileSync(path.join(dir, file), 'utf8')
+            expect(source).not.toMatch(/from ['"](@\/|vue|vuex|vuetify|pinia)/)
         }
     })
 

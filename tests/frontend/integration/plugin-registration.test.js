@@ -10,7 +10,7 @@ describe('Plugin registration (index.js)', () => {
         jest.mock('@/routes')
         registerRoute = require('@/routes').registerRoute
         registerRoute.mockClear()
-        require('../../../src/index.js')
+        require('../../../src/ui36/index.js')
     })
 
     it('calls registerRoute exactly once', () => {

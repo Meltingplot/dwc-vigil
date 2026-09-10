@@ -10,7 +10,7 @@
 </template>
 
 <script>
-import { formatDuration, formatNumber } from '../core/format'
+import { formatDuration, formatNumber } from '../../core/format'
 
 const COLOR_MAP = {
     blue: '#1976D2',

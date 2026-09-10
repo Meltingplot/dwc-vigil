@@ -33,7 +33,7 @@
 </template>
 
 <script>
-import { formatDistance } from '../core/format'
+import { formatDistance } from '../../core/format'
 
 export default {
     name: 'AxisTable',

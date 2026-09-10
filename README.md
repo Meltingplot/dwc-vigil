@@ -71,12 +71,18 @@ immediately.
 ## Architecture
 
 ```
-src/                        # Frontend (Vue 2.7 + Vuetify 2.7)
-  index.js                  # Plugin registration, recovers a stopped backend
-  VigilDashboard.vue        # Main dashboard view
-  backend.js                # SBC backend state (PID lookup, start, auto-recovery)
-  routes.js / store.js      # Jest-only stubs for DWC's @/routes and @/store
-  components/               # UI components (charts, cards, dialogs)
+src/
+  index.js                  # Entry point every DWC builder compiles
+  core/                     # Framework-neutral, shipped to every DWC generation
+    host.js                 # The DWC seam: object model read + start the backend
+    backend.js              # SBC backend state (PID lookup, start, auto-recovery)
+    api.js                  # Calls to the daemon's DSF HTTP endpoints
+    format.js               # Duration / distance / temperature / byte formatting
+  ui36/                     # DWC 3.6 shell (Vue 2.7 + Vuetify 2.7)
+    index.js                # Plugin registration, recovers a stopped backend
+    host.js                 # Vuex implementation of the host adapter
+    VigilDashboard.vue      # Main dashboard view
+    components/             # UI components (charts, cards, dialogs)
 
 dsf/                        # Backend (Python, runs on SBC)
   vigil-daemon.py           # Main daemon — DSF subscription & lifecycle
@@ -112,44 +118,68 @@ pytest tests/ -v
 
 ### Building
 
-The plugin is built using the DWC plugin build system:
+Vigil is built by DuetWebControl's own plugin builder, which resolves
+`"dwcVersion": "auto-major"` to the major.minor of whichever DWC checkout does the
+build. The 3.6 build never runs against the repo directly: `scripts/stage-dwc36.mjs`
+first assembles a tree holding only `src/core/`, `src/ui36/`, `dsf/` and `plugin.json`,
+because the 3.6 builder copies (and compiles from) the whole of `<pluginDir>/src`.
+
+The easy way is the local CI runner, which keeps its DWC checkout in `.ci-local/`:
+
+```bash
+scripts/ci-local.sh build36     # -> .ci-local/dist/Vigil-<version>-dwc36.zip
+```
+
+By hand:
 
 ```bash
 git clone --branch v3.6-dev https://github.com/Duet3D/DuetWebControl.git ../DuetWebControl
+cd ../DuetWebControl && npm install && cd -
+npm ci
+node scripts/stage-dwc36.mjs /tmp/vigil-stage-36
 cd ../DuetWebControl
-npm install
-npm run build-plugin ../dwc-vigil
+npm run build-plugin-pkg -- /tmp/vigil-stage-36
 ```
 
-The resulting ZIP will be in `DuetWebControl/dist/`. That ZIP *is* the installable
-plugin package (`plugin.json` sits at its root) — upload it as-is.
+The resulting ZIP lands in `DuetWebControl/dist/` and *is* the installable plugin
+package (`plugin.json` sits at its root, `dwcFiles` / `dsfFiles` list its contents) —
+upload it as-is.
+
+`npm run check-ui36` compiles every `src/ui36/*.vue` with the 3.6 checkout's own Vue 2.7
+compiler in about a second (`DWC36_DIR=<checkout>`). It catches malformed SFCs, not
+wrong Vuetify props — only a real DWC 3.6 catches those.
 
 ### Running CI locally
 
 `scripts/ci-local.sh` reproduces the GitHub Actions pipeline
 (`.github/workflows/ci.yml`) on a workstation. Everything it needs lives in the
-gitignored `.ci-local/` directory (Python virtualenv, DuetWebControl checkout, built
-ZIPs) — nothing is installed system-wide.
+gitignored `.ci-local/` directory (Python virtualenv, DuetWebControl checkouts, staged
+source trees, built ZIPs) — nothing is installed system-wide.
 
 ```bash
 scripts/ci-local.sh            # python, frontend, build (default)
 scripts/ci-local.sh python     # pytest in .ci-local/venv
 scripts/ci-local.sh frontend   # npm ci + lint + jest unit + jest integration
-scripts/ci-local.sh build      # DuetWebControl checkout + build-plugin + ZIP checks
+scripts/ci-local.sh build36    # DWC 3.6 checkout + stage + build-plugin-pkg + ZIP checks
+scripts/ci-local.sh build      # every build stage
 scripts/ci-local.sh matrix     # pytest on Python 3.10-3.12 via Docker
 ```
 
 The `matrix` stage needs Docker; it mirrors the CI's Python version matrix, which a
 single local interpreter cannot cover.
 
-The `build` stage temporarily runs `scripts/version.js --write` (as CI does) and restores
-`plugin.json` / `package.json` afterwards, so the working tree stays clean. It also drops
-`dsf/__pycache__` before building — the DWC builder copies `dsf/` verbatim, so bytecode
-left behind by a previous `pytest` run would otherwise end up inside the plugin ZIP. The
-resulting ZIP is copied to `.ci-local/dist/` after its layout and manifest are verified.
+The build stages temporarily run `scripts/version.js --write` (as CI does) and restore
+`plugin.json` / `package.json` afterwards, so the working tree stays clean. They also
+drop `dsf/__pycache__` before building — every DWC builder copies `dsf/` verbatim, so
+bytecode left behind by a previous `pytest` run would otherwise end up inside the plugin
+ZIP. Each ZIP is copied to `.ci-local/dist/` under a name carrying its DWC generation,
+after its layout and manifest are verified (`plugin.json` at the root, a built DWC JS
+resource, the daemon, no bytecode, no nested ZIP, and a `dwcVersion` matching the
+checkout it was built against).
 
-Overrides: `DWC_REF=<ref>` selects the DuetWebControl ref (default `v3.6-dev`),
-`PYTHON=<interpreter>` selects the interpreter used for the venv.
+Overrides: `DWC36_REF=<ref>` selects the DuetWebControl ref the 3.6 package is built
+against (default `v3.6-dev`), `PYTHON=<interpreter>` selects the interpreter used for
+the venv.
 
 ## License
 

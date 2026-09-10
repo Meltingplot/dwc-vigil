@@ -96,7 +96,7 @@
 </template>
 
 <script>
-import { formatBytes, formatDuration, formatTemp, formatVoltage } from '../core/format'
+import { formatBytes, formatDuration, formatTemp, formatVoltage } from '../../core/format'
 
 export default {
     name: 'VitalsCard',

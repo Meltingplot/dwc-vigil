@@ -8,7 +8,7 @@ const mockStore = {
 }
 jest.mock('@/store', () => ({ __esModule: true, default: mockStore }))
 
-const { createHost } = require('../../src/host')
+const { createHost } = require('../../src/ui36/host')
 
 describe('DWC 3.6 host adapter', () => {
     beforeEach(() => {

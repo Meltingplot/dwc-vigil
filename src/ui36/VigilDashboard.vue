@@ -164,8 +164,8 @@ import ExportButton from './components/ExportButton.vue'
 import ServiceResetDialog from './components/ServiceResetDialog.vue'
 import ServiceEventDialog from './components/ServiceEventDialog.vue'
 import ServiceLogDialog from './components/ServiceLogDialog.vue'
-import { apiBlob, apiGet, apiPost, downloadBlob, waitForBackend } from './core/api'
-import { isBackendRunning, startBackend } from './core/backend'
+import { apiBlob, apiGet, apiPost, downloadBlob, waitForBackend } from '../core/api'
+import { isBackendRunning, startBackend } from '../core/backend'
 import { createHost } from './host'
 
 const TIER_KEYS = ['lifetime', 'service', 'session']

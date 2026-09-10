@@ -1,23 +1,8 @@
-'use strict'
-
-import { registerRoute } from '@/routes'
-import VigilDashboard from './VigilDashboard.vue'
-import { ensureBackendRunning } from './core/backend'
-import { createHost } from './host'
-
-registerRoute(VigilDashboard, {
-    Plugins: {
-        Vigil: {
-            icon: 'mdi-chart-box-outline',
-            caption: 'Vigil',
-            translated: true,
-            path: '/Vigil'
-        }
-    }
-})
-
-// Installing over an existing version makes DSF stop the old SBC process
-// without starting the new one, which leaves the plugin "partially started"
-// and all of its HTTP endpoints unreachable. Recover from that as soon as DWC
-// loads our resources.
-ensureBackendRunning(createHost())
+/**
+ * Vigil — entry point compiled by DuetWebControl's plugin builder.
+ *
+ * Both builders always compile `src/index.js`, so it can only ever name one UI shell.
+ * This is the DWC 3.6 one for now; the 3.7 shell takes its place once it exists, and
+ * `scripts/stage-dwc36.mjs` generates the 3.6 build its own one-line entry either way.
+ */
+import './ui36/index'
