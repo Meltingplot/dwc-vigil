@@ -285,8 +285,9 @@ Each phase is independently committable and leaves the 3.6 ZIP installable.
 2. Add `scripts/stage-dwc36.mjs` (INCLUDE `core`, `ui36`; VENDOR empty until Phase 3) and
    `scripts/check-ui36.mjs`.
 3. CI: the existing build job switches to stage → `build-plugin-pkg -- <stage>` → rename to
-   `Vigil-<ver>-dwc36.zip`. Also run `check-ui36` in that job (it already has the 3.6 checkout
-   with `node_modules`).
+   `Vigil-<ver>-dwc36.zip` → unpack into its own artifact directory and upload that as artifact
+   `Vigil-dwc36` (see §7.10, this keeps the downloaded artifact directly installable). Also run
+   `check-ui36` in that job (it already has the 3.6 checkout with `node_modules`).
 4. Update `tests/frontend/integration/plugin-structure.test.js` (entry path, stubs no longer in `src/`)
    and drop `scripts/build-zip.js` + the `build` npm script.
 5. **Verify:** ZIP from the staged build is functionally identical to Phase 0's.
@@ -317,7 +318,8 @@ Suggested order, building after each step (upstream's advice: never write everyt
 3. `tests/ui37/` mount tests via the test kit.
 4. CI: new `build-dwc37` job (Node 22+, checkout `v3.7-dev`, `npm install` in DWC, `npm ci` in the
    plugin so the builder's own install is a no-op, `node scripts/build-plugin-pkg.js ../plugin`,
-   rename to `Vigil-<ver>-dwc37.zip`, keep `-srcmap.zip` out of the artifact).
+   rename to `Vigil-<ver>-dwc37.zip`, unpack it into its own artifact directory and upload that as
+   artifact `Vigil-dwc37`; the `-srcmap.zip` must not land in that directory, see §7.3 and §7.10).
 5. **Verify on a real DWC 3.7 + DSF 3.7:** install, daemon starts, dashboard polls, every tab,
    dialog, export and reset works, upgrade-over-existing triggers the banner and Start Backend works,
    stopping the plugin in Settings → Plugins removes the menu entry (unregisterRoute).
@@ -374,6 +376,27 @@ DWC 3.7's builder emits `Vigil-<ver>-srcmap.zip` next to `Vigil-<ver>.zip`. `-` 
 naive `ls Vigil-*.zip | head -1` picks the sourcemap archive. Filter it out explicitly (upstream
 shipped this bug once).
 
+### 7.10 CI artifacts must stay installable: no ZIP inside a ZIP
+GitHub always wraps an uploaded artifact in a ZIP of its own on download. Uploading `Vigil-<ver>.zip`
+as-is therefore yields `Vigil-plugin.zip` containing `Vigil-<ver>.zip`, which DWC rejects (no
+`plugin.json` at the root). Today's `ci.yml` already solves this: it unpacks the plugin ZIP into a
+directory and uploads the *contents*, so the artifact ZIP GitHub serves has `plugin.json`, `dsf/` and
+`dwc/` at its root and installs directly. The dual build keeps that rule, with two additions:
+
+- **One artifact per generation** (`Vigil-dwc36`, `Vigil-dwc37`), each holding one unpacked plugin
+  tree. Never put both ZIPs, or both unpacked trees, into one artifact: the former is ZIP-in-ZIP, the
+  latter collides on `plugin.json`. The artifact name is what the download is called, so it should
+  carry the generation.
+- **Unpack only the plugin ZIP.** The 3.7 builder writes `Vigil-<ver>-srcmap.zip` next to the real
+  package and a `pkg/` staging directory that mirrors the ZIP layout. Filter `-srcmap.zip` out before
+  unpacking (or upload `pkg/` directly, which is already the unpacked tree), otherwise the sourcemap
+  archive ends up inside the artifact as a stray file.
+- **Release assets are different.** `gh release create` / `softprops/action-gh-release` attach the
+  ZIP files themselves, unwrapped, so the two renamed ZIPs are uploaded as-is there. Only the
+  `actions/upload-artifact` path needs the unpack step.
+- Verify in CI, not by eye: after unpacking, assert `test -f <dir>/plugin.json` and that
+  `unzip -l` of the produced plugin ZIP lists no `*.zip` entry, then fail the job otherwise.
+
 ### 7.4 `ui36/` has no automated safety net beyond compiling
 Vuetify 4 props surviving in a Vuetify 2 template (or vice versa) are valid markup. `check-ui36.mjs`
 catches malformed SFCs in a second; the Jest mount tests catch script errors; only a real DWC 3.6
@@ -421,6 +444,8 @@ On 3.7, unregister the route and clear the poll timer when Vigil is stopped from
       brings the endpoints back; DWC's own charts still render on 3.6 (no chart.js leak)
 - [ ] On 3.7: stopping the plugin removes the menu entry; starting it again brings it back without a reload
 - [ ] Release run attaches both ZIPs and the notes name both DWC refs
+- [ ] The two CI artifacts each download as a ZIP with `plugin.json` at the root, contain no nested
+      `*.zip`, and install directly on their generation (§7.10)
 
 ---
 
