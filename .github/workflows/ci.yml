@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       duetwebcontrol_ref:
-        description: 'DuetWebControl branch/tag to build against (default: v3.6-dev)'
+        description: 'DuetWebControl 3.6 branch/tag to build against (default: v3.6-dev)'
+        required: false
+        default: ''
+      duetwebcontrol37_ref:
+        description: 'DuetWebControl 3.7 branch/tag to build against (default: v3.7-dev)'
         required: false
         default: ''
 
@@ -48,6 +52,9 @@ jobs:
         with:
           node-version: "18"
           cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            tests/ui36/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -55,14 +62,22 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Unit tests
-        run: npx jest tests/frontend/*.test.js --verbose
+      # src/core/ and src/ui37/ — Vue 3, vitest, dwc-plugin-test-kit
+      - name: Tests (core + DWC 3.7 shell)
+        run: npm test
 
-      - name: Integration tests
-        run: npx jest tests/frontend/integration/ --verbose
+      # src/ui36/ — Vue 2.7, Jest, in its own nested project: one package.json
+      # cannot hold both Vue majors, and the root has to be the Vue 3 one because
+      # that is what DWC 3.7's plugin builder reads and installs from.
+      - name: Install DWC 3.6 test project dependencies
+        working-directory: tests/ui36
+        run: npm ci
 
-  build:
-    name: Build Plugin ZIP
+      - name: Tests (DWC 3.6 shell)
+        run: npm run test:ui36
+
+  build-dwc36:
+    name: Build Plugin ZIP (DWC 3.6)
     runs-on: ubuntu-latest
     needs: [python-tests, frontend-tests]
 
@@ -90,25 +105,143 @@ jobs:
         working-directory: DuetWebControl
         run: npm install
 
-      - name: Compute version from git
+      # The staging script vendors packages out of the plugin's own node_modules,
+      # so the root install is a prerequisite of the 3.6 build, not just of the tests.
+      - name: Install plugin dependencies
         working-directory: plugin
-        run: node scripts/version.js --write
+        run: npm ci
+
+      # Cheap safety net for src/ui36/: the repo's own toolchain cannot parse a Vue 2
+      # SFC, so this borrows the 3.6 checkout's compiler. Runs here because this is
+      # the job that already has that checkout installed.
+      - name: Compile-check the DWC 3.6 SFCs
+        working-directory: plugin
+        env:
+          DWC36_DIR: ${{ github.workspace }}/DuetWebControl
+        run: npm run check-ui36
+
+      - name: Compute version from git
+        id: version
+        working-directory: plugin
+        run: |
+          version=$(node scripts/version.js --write | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The 3.6 builder copies the whole of <pluginDir>/src, so it must never see the
+      # repo itself once src/ui37/ exists: stage a tree holding only core/ and ui36/.
+      - name: Stage the DWC 3.6 source tree
+        working-directory: plugin
+        run: node scripts/stage-dwc36.mjs "$RUNNER_TEMP/stage-36"
 
       - name: Build plugin
         working-directory: DuetWebControl
-        run: npm run build-plugin ../plugin
+        run: npm run build-plugin-pkg -- "$RUNNER_TEMP/stage-36"
 
-      - name: Verify build output
-        run: ls DuetWebControl/dist/Vigil-*.zip
-
-      - name: Extract plugin ZIP for artifact upload
+      - name: Name the ZIP after its DWC generation
+        id: zip
         run: |
-          mkdir -p artifact-content
-          unzip DuetWebControl/dist/Vigil-*.zip -d artifact-content
+          src="DuetWebControl/dist/Vigil-${{ steps.version.outputs.version }}.zip"
+          test -f "$src" || { echo "::error::$src was not built"; exit 1; }
+          out="Vigil-${{ steps.version.outputs.version }}-dwc36.zip"
+          mv "$src" "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      # GitHub wraps every uploaded artifact in a ZIP of its own, so uploading the
+      # plugin ZIP as-is would yield a ZIP-in-ZIP that DWC refuses to install.
+      # Upload the unpacked tree instead; the download is then directly installable.
+      - name: Unpack plugin ZIP for artifact upload
+        run: |
+          mkdir -p artifact-dwc36
+          unzip "${{ steps.zip.outputs.path }}" -d artifact-dwc36
+          test -f artifact-dwc36/plugin.json || { echo "::error::plugin.json is not at the ZIP root"; exit 1; }
+          if unzip -Z1 "${{ steps.zip.outputs.path }}" | grep -qE '\.zip$'; then
+            echo "::error::plugin ZIP contains a nested *.zip entry"
+            exit 1
+          fi
 
       - name: Upload plugin ZIP
         uses: actions/upload-artifact@v7
         with:
-          name: Vigil-plugin
-          path: artifact-content/*
+          name: Vigil-dwc36
+          path: artifact-dwc36/*
+          retention-days: 30
+
+  build-dwc37:
+    name: Build Plugin ZIP (DWC 3.7)
+    runs-on: ubuntu-latest
+    needs: [python-tests, frontend-tests]
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v6
+        with:
+          path: plugin
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Checkout DuetWebControl
+        uses: actions/checkout@v6
+        with:
+          repository: Duet3D/DuetWebControl
+          ref: ${{ github.event.inputs.duetwebcontrol37_ref || 'v3.7-dev' }}
+          path: DuetWebControl
+
+      # DWC 3.7 builds with Vite 8, which needs Node >= 22 — hence a job of its own
+      # rather than a second step in the 3.6 build.
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install DWC dependencies
+        working-directory: DuetWebControl
+        run: npm install
+
+      # installPluginDependencies() runs `npm install` in the plugin dir for anything
+      # missing from dependencies or devDependencies; a complete install makes that a
+      # no-op, so nothing is ever resolved on the fly next to a Vite build.
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: npm ci
+
+      - name: Compute version from git
+        id: version
+        working-directory: plugin
+        run: |
+          version=$(node scripts/version.js --write | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Unlike the 3.6 builder this one is pointed straight at the repo — it compiles
+      # src/index.js, which imports ui37 only, so ui36 is never bundled.
+      - name: Build plugin
+        working-directory: DuetWebControl
+        run: node scripts/build-plugin-pkg.js ../plugin
+
+      - name: Name the ZIP after its DWC generation
+        id: zip
+        run: |
+          src="plugin/Vigil-${{ steps.version.outputs.version }}.zip"
+          test -f "$src" || { echo "::error::$src was not built"; exit 1; }
+          out="Vigil-${{ steps.version.outputs.version }}-dwc37.zip"
+          mv "$src" "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      # As for 3.6: GitHub wraps artifacts in a ZIP of their own, so upload the
+      # unpacked tree. The builder also writes Vigil-<ver>-srcmap.zip next to the
+      # package — addressed by exact name above so it can never be unpacked instead.
+      - name: Unpack plugin ZIP for artifact upload
+        run: |
+          mkdir -p artifact-dwc37
+          unzip "${{ steps.zip.outputs.path }}" -d artifact-dwc37
+          test -f artifact-dwc37/plugin.json || { echo "::error::plugin.json is not at the ZIP root"; exit 1; }
+          if unzip -Z1 "${{ steps.zip.outputs.path }}" | grep -qE '\.zip$'; then
+            echo "::error::plugin ZIP contains a nested *.zip entry"
+            exit 1
+          fi
+
+      - name: Upload plugin ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: Vigil-dwc37
+          path: artifact-dwc37/*
           retention-days: 30

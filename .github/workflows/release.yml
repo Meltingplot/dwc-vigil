@@ -1,7 +1,13 @@
 name: Release
 
-# Builds Vigil against the latest stable DuetWebControl release and publishes a
-# GitHub Release.
+# Builds Vigil against the latest DuetWebControl release of each supported generation
+# and publishes both packages in one GitHub Release.
+#
+# DWC 3.6 and 3.7 are different framework stacks and DWC refuses to install a package
+# built for the other one, so a release carries two assets:
+#   Vigil-<version>-dwc36.zip  built against the newest v3.6.x tag
+#   Vigil-<version>-dwc37.zip  built against the newest v3.7.x tag (or, while none
+#                              exists, the newest 3.7 pre-release — said so in the notes)
 #
 # Trigger: push to the `release` branch (or run manually via workflow_dispatch).
 # Version: taken from the `version` field in plugin.json (override with the
@@ -57,6 +63,9 @@ jobs:
         with:
           node-version: "18"
           cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            tests/ui36/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -64,11 +73,15 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Unit tests
-        run: npx jest tests/frontend/*.test.js --verbose
+      - name: Tests (core + DWC 3.7 shell)
+        run: npm test
 
-      - name: Integration tests
-        run: npx jest tests/frontend/integration/ --verbose
+      - name: Install DWC 3.6 test project dependencies
+        working-directory: tests/ui36
+        run: npm ci
+
+      - name: Tests (DWC 3.6 shell)
+        run: npm run test:ui36
 
   release:
     name: Build & Publish Release
@@ -82,20 +95,36 @@ jobs:
           path: plugin
           fetch-depth: 0
 
-      - name: Resolve latest stable DuetWebControl tag
+      # One tag per generation. The previous single "highest tag wins" regex would have
+      # silently started building 3.6 users a 3.7 package the day 3.7.0 shipped.
+      - name: Resolve DuetWebControl tags
         id: dwc
         run: |
-          ref=$(git ls-remote --tags --refs https://github.com/Duet3D/DuetWebControl.git \
-            | awk -F/ '{print $NF}' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V \
-            | tail -n1)
-          if [ -z "$ref" ]; then
-            echo "::error::Could not resolve a stable DuetWebControl tag"
+          tags=$(git ls-remote --tags --refs https://github.com/Duet3D/DuetWebControl.git | awk -F/ '{print $NF}')
+
+          ref36=$(echo "$tags" | grep -E '^v3\.6\.[0-9]+$' | sort -V | tail -n1)
+          if [ -z "$ref36" ]; then
+            echo "::error::Could not resolve a stable DuetWebControl 3.6 tag"
             exit 1
           fi
-          echo "Latest stable DuetWebControl tag: $ref"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+          ref37=$(echo "$tags" | grep -E '^v3\.7\.[0-9]+$' | sort -V | tail -n1)
+          prerelease37=false
+          if [ -z "$ref37" ]; then
+            # No stable 3.7 yet: take the newest pre-release, and fall back to the
+            # development branch only if there is not even one of those.
+            ref37=$(echo "$tags" | grep -E '^v3\.7\.[0-9]+-(alpha|beta|rc)\.[0-9]+$' | sort -V | tail -n1)
+            [ -z "$ref37" ] && ref37=v3.7-dev
+            prerelease37=true
+          fi
+
+          echo "DuetWebControl 3.6: $ref36"
+          echo "DuetWebControl 3.7: $ref37 (pre-release: $prerelease37)"
+          {
+            echo "ref36=$ref36"
+            echo "ref37=$ref37"
+            echo "prerelease37=$prerelease37"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Determine Vigil version
         id: version
@@ -113,7 +142,8 @@ jobs:
           echo "Vigil release version: $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          # Stamp the resolved version into plugin.json/package.json for the build.
+          # Stamp the resolved version into plugin.json/package.json for both builds, so
+          # the two packages cannot end up carrying different versions.
           node -e "const fs=require('fs');for(const f of ['plugin.json','package.json']){const j=JSON.parse(fs.readFileSync(f));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n');}" "$version"
 
       - name: Ensure release does not already exist
@@ -125,54 +155,136 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout DuetWebControl
+      - name: Checkout DuetWebControl 3.6
         uses: actions/checkout@v6
         with:
           repository: Duet3D/DuetWebControl
-          ref: ${{ steps.dwc.outputs.ref }}
-          path: DuetWebControl
+          ref: ${{ steps.dwc.outputs.ref36 }}
+          path: DuetWebControl-36
 
-      - name: Set up Node.js
+      - name: Checkout DuetWebControl 3.7
+        uses: actions/checkout@v6
+        with:
+          repository: Duet3D/DuetWebControl
+          ref: ${{ steps.dwc.outputs.ref37 }}
+          path: DuetWebControl-37
+
+      # DWC 3.6 (vue-cli 5) builds on Node 18; the 3.7 half switches to Node 22 below,
+      # because Vite 8 requires it. Both builds run in this one job so a release can
+      # never end up with only one of its two assets.
+      - name: Set up Node.js 18
         uses: actions/setup-node@v6
         with:
           node-version: "18"
 
-      - name: Install DWC dependencies
-        working-directory: DuetWebControl
+      # Needed by both builds: stage-dwc36.mjs vendors chart.js out of the plugin's own
+      # node_modules, and a complete install keeps the 3.7 builder from installing
+      # anything itself.
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: npm ci
+
+      - name: Install DWC 3.6 dependencies
+        working-directory: DuetWebControl-36
         run: npm install
 
-      - name: Build plugin
-        working-directory: DuetWebControl
-        run: npm run build-plugin ../plugin
+      - name: Compile-check the DWC 3.6 SFCs
+        working-directory: plugin
+        env:
+          DWC36_DIR: ${{ github.workspace }}/DuetWebControl-36
+        run: npm run check-ui36
 
-      - name: Locate built ZIP
-        id: zip
+      - name: Stage the DWC 3.6 source tree
+        working-directory: plugin
+        run: node scripts/stage-dwc36.mjs "$RUNNER_TEMP/stage-36"
+
+      - name: Build DWC 3.6 package
+        working-directory: DuetWebControl-36
+        run: npm run build-plugin-pkg -- "$RUNNER_TEMP/stage-36"
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install DWC 3.7 dependencies
+        working-directory: DuetWebControl-37
+        run: npm install
+
+      - name: Build DWC 3.7 package
+        working-directory: DuetWebControl-37
+        run: node scripts/build-plugin-pkg.js ../plugin
+
+      # Both packages are addressed by exact name: the 3.7 builder also writes
+      # Vigil-<version>-srcmap.zip, which a glob would sort ahead of the real one.
+      - name: Collect both packages
+        id: zips
         run: |
-          zip=$(ls DuetWebControl/dist/Vigil-*.zip | head -n1)
-          echo "Built ZIP: $zip"
-          echo "path=$zip" >> "$GITHUB_OUTPUT"
+          version="${{ steps.version.outputs.version }}"
+          mkdir -p release
+          mv "DuetWebControl-36/dist/Vigil-$version.zip" "release/Vigil-$version-dwc36.zip"
+          mv "plugin/Vigil-$version.zip" "release/Vigil-$version-dwc37.zip"
 
-      - name: Extract plugin ZIP for artifact upload
-        run: |
-          mkdir -p artifact-content
-          unzip "${{ steps.zip.outputs.path }}" -d artifact-content
+          for generation in 36 37; do
+            zip="release/Vigil-$version-dwc$generation.zip"
+            dir="artifact-dwc$generation"
+            mkdir -p "$dir"
+            unzip "$zip" -d "$dir"
+            test -f "$dir/plugin.json" || { echo "::error::$zip has no plugin.json at its root"; exit 1; }
+            if unzip -Z1 "$zip" | grep -qE '\.zip$'; then
+              echo "::error::$zip contains a nested *.zip entry"
+              exit 1
+            fi
+            expected=$(node -p "require('./DuetWebControl-$generation/package.json').version.split('.').slice(0,2).join('.')")
+            actual=$(node -p "require('./$dir/plugin.json').dwcVersion")
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::$zip declares dwcVersion $actual, expected $expected"
+              exit 1
+            fi
+            echo "$zip -> dwcVersion $actual"
+          done
 
-      - name: Upload plugin ZIP artifact
+      # GitHub wraps every artifact in a ZIP of its own, so these hold the unpacked
+      # trees and download directly installable. The release assets below are the ZIPs
+      # themselves, which gh attaches unwrapped.
+      - name: Upload DWC 3.6 artifact
         uses: actions/upload-artifact@v7
         with:
-          name: Vigil-plugin
-          path: artifact-content/*
+          name: Vigil-dwc36
+          path: artifact-dwc36/*
+          retention-days: 90
+
+      - name: Upload DWC 3.7 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Vigil-dwc37
+          path: artifact-dwc37/*
           retention-days: 90
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Publishing ${{ steps.version.outputs.tag }} (DWC ${{ steps.dwc.outputs.ref }})"
+          version="${{ steps.version.outputs.version }}"
+          notes="Install the package that matches your DuetWebControl — DWC rejects the other one.
+
+          | Your DuetWebControl | Download |
+          |---|---|
+          | 3.6.x | \`Vigil-$version-dwc36.zip\` (built against ${{ steps.dwc.outputs.ref36 }}) |
+          | 3.7.x | \`Vigil-$version-dwc37.zip\` (built against ${{ steps.dwc.outputs.ref37 }}) |
+          "
+          if [ "${{ steps.dwc.outputs.prerelease37 }}" = "true" ]; then
+            notes="$notes
+          > **Note:** there is no stable DuetWebControl 3.7 release yet, so the 3.7 package was built against \`${{ steps.dwc.outputs.ref37 }}\`. The 3.6 package is unaffected.
+          "
+          fi
+
+          echo "Publishing ${{ steps.version.outputs.tag }}"
           gh release create "${{ steps.version.outputs.tag }}" \
-            "${{ steps.zip.outputs.path }}" \
+            "release/Vigil-$version-dwc36.zip" \
+            "release/Vigil-$version-dwc37.zip" \
             --repo "${{ github.repository }}" \
-            --title "Vigil ${{ steps.version.outputs.version }}" \
+            --title "Vigil $version" \
             --target "${{ github.sha }}" \
-            --notes "Built against DuetWebControl ${{ steps.dwc.outputs.ref }}." \
+            --notes "$notes" \
             --generate-notes

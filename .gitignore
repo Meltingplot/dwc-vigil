@@ -211,3 +211,12 @@ __marimo__/
 
 # Local CI runner workspace
 .ci-local/
+
+# Plugin build outputs
+# The DWC 3.7 builder writes into the plugin directory, i.e. the repo root
+/pkg/
+/Vigil-*.zip
+
+# Nested Jest project for src/ui36 (its lockfile IS committed)
+/tests/ui36/node_modules/
+/tests/ui36/coverage/

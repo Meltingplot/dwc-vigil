@@ -3,9 +3,12 @@
 # Run the GitHub Actions CI pipeline (.github/workflows/ci.yml) locally.
 #
 # Everything is kept inside .ci-local/ (gitignored):
-#   .ci-local/venv            Python virtualenv with pytest + pytest-cov
-#   .ci-local/DuetWebControl  DWC 3.6 checkout used to build the plugin
-#   .ci-local/dist            built plugin ZIPs
+#   .ci-local/venv                 Python virtualenv with pytest + pytest-cov
+#   .ci-local/DuetWebControl-36    DWC 3.6 checkout used for the 3.6 package
+#   .ci-local/DuetWebControl-37    DWC 3.7 checkout used for the 3.7 package
+#   .ci-local/stage-36             staged 3.6 source tree (scripts/stage-dwc36.mjs)
+#   .ci-local/dist                 built plugin ZIPs, one per DWC generation
+#   .ci-local/version-backup       plugin.json / package.json snapshots
 #
 # Nothing is installed globally and the system Python/Node are left untouched.
 #
@@ -15,12 +18,20 @@
 # Stages:
 #   python      pytest (venv, host Python)
 #   matrix      pytest on Python 3.10/3.11/3.12 via Docker (full CI matrix)
-#   frontend    npm ci + lint + jest unit + jest integration
-#   build       DuetWebControl checkout + npm run build-plugin -> Vigil-<version>.zip
+#   frontend    npm ci + lint + vitest (core, ui37) + jest (ui36)
+#   build36     DWC 3.6 checkout + stage + build-plugin-pkg -> Vigil-<version>-dwc36.zip
+#   build37     DWC 3.7 checkout + build-plugin-pkg          -> Vigil-<version>-dwc37.zip
+#   build       build36 + build37
 #   all         python + frontend + build  (default)
 #
+# DWC 3.7 builds with Vite 8, which needs Node >= 22. If the host Node is older this
+# runs the 3.7 build in a node:22-slim container the way the `matrix` stage runs pytest
+# (BUILD37_DOCKER=0 to refuse instead).
+#
 # Env overrides:
-#   DWC_REF=v3.6-dev    DuetWebControl ref to build against
+#   DWC36_REF=v3.6-dev  DuetWebControl ref the 3.6 package is built against
+#   DWC37_REF=v3.7-dev  DuetWebControl ref the 3.7 package is built against
+#   BUILD37_DOCKER=0    never fall back to Docker for the 3.7 build
 #   PYTHON=python3      interpreter used to create the venv
 
 set -euo pipefail
@@ -28,8 +39,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$ROOT/.ci-local"
 VENV="$WORK/venv"
-DWC_DIR="$WORK/DuetWebControl"
-DWC_REF="${DWC_REF:-v3.6-dev}"
+DIST="$WORK/dist"
+DWC36_DIR="$WORK/DuetWebControl-36"
+DWC36_REF="${DWC36_REF:-v3.6-dev}"
+DWC37_DIR="$WORK/DuetWebControl-37"
+DWC37_REF="${DWC37_REF:-v3.7-dev}"
+STAGE36="$WORK/stage-36"
 PYTHON="${PYTHON:-python3}"
 PY_MATRIX=(3.10 3.11 3.12)
 
@@ -77,62 +92,89 @@ stage_frontend() {
     cd "$ROOT"
     npm ci
     npm run lint
-    npx jest tests/frontend/*.test.js --verbose
-    npx jest tests/frontend/integration/ --verbose
+    # src/core/ and src/ui37/ — Vue 3, vitest, dwc-plugin-test-kit
+    npm test
+    # src/ui36/ — Vue 2.7, Jest, in its own nested project with its own lockfile
+    (cd "$ROOT/tests/ui36" && npm ci)
+    npm run test:ui36
     ok "Frontend lint & tests passed"
 }
 
-# Fetch (or update) the DuetWebControl checkout at the configured ref.
+# Fetch (or update) a DuetWebControl checkout at the given ref.
 checkout_dwc() {
-    if [ -d "$DWC_DIR/.git" ]; then
-        git -C "$DWC_DIR" fetch --depth 1 origin "$DWC_REF"
-        git -C "$DWC_DIR" checkout --force FETCH_HEAD
+    local dir="$1" ref="$2"
+    if [ -d "$dir/.git" ]; then
+        git -C "$dir" fetch --depth 1 origin "$ref"
+        git -C "$dir" checkout --force FETCH_HEAD
     else
-        git clone --depth 1 --branch "$DWC_REF" \
-            https://github.com/Duet3D/DuetWebControl.git "$DWC_DIR"
+        git clone --depth 1 --branch "$ref" \
+            https://github.com/Duet3D/DuetWebControl.git "$dir"
     fi
 }
 
-# version.js --write patches plugin.json/package.json; CI does this on a
-# throwaway checkout, so locally we snapshot and restore them afterwards.
+# major.minor of a DuetWebControl checkout — what "auto-major" resolves to.
+dwc_major_minor() {
+    node -p 'require(process.argv[1] + "/package.json").version.split(".").slice(0,2).join(".")' "$1"
+}
+
+# version.js --write patches plugin.json/package.json; CI does this on a throwaway
+# checkout, so locally we snapshot and restore them afterwards. Stamped once before
+# the first build stage so every generation's ZIP carries the same version.
+VERSION=""
 stamp_version() {
+    [ -n "$VERSION" ] && return 0
     local backup="$WORK/version-backup"
     mkdir -p "$backup"
     cp "$ROOT/plugin.json" "$ROOT/package.json" "$backup/"
-    trap 'cp "$WORK/version-backup/plugin.json" "$WORK/version-backup/package.json" "$ROOT/"' EXIT
-    (cd "$ROOT" && node scripts/version.js --write)
+    (cd "$ROOT" && node scripts/version.js --write >/dev/null)
+    VERSION="$(node -p 'require("'"$ROOT"'/plugin.json").version')"
+    step "Stamped version $VERSION"
 }
 
-restore_version() {
-    cp "$WORK/version-backup/plugin.json" "$WORK/version-backup/package.json" "$ROOT/"
-    trap - EXIT
+# DWC 3.7's builder writes its outputs INTO the plugin directory, which locally is the
+# working tree: dist/, pkg/, Vigil-<ver>.zip and Vigil-<ver>-srcmap.zip.
+clean_build37_outputs() {
+    rm -rf "$ROOT/dist" "$ROOT/pkg"
+    rm -f "$ROOT"/Vigil-*.zip
 }
 
-# Report and copy out the ZIP the build produced, and check it is installable.
+# Whatever happens, the working tree has to come back clean: the version files as they
+# were, and none of the 3.7 builder's leavings.
+cleanup() {
+    if [ -n "$VERSION" ] && [ -f "$WORK/version-backup/plugin.json" ]; then
+        cp "$WORK/version-backup/plugin.json" "$WORK/version-backup/package.json" "$ROOT/"
+    fi
+    clean_build37_outputs
+}
+trap cleanup EXIT
+
+# pytest leaves dsf/__pycache__ behind and every builder copies dsf/ verbatim, so a
+# local package would ship bytecode that CI's fresh checkout never has.
+strip_pycache() {
+    find "$ROOT/dsf" -name __pycache__ -type d -prune -exec rm -rf {} +
+}
+
+# Check a built ZIP is installable, then copy it into .ci-local/dist under its
+# generation-specific name.
+#   collect_zip <built-zip> <expected dwcVersion major.minor> <dist filename>
 collect_zip() {
-    local zip expected listing
-    zip="$(ls -1t "$DWC_DIR"/dist/Vigil-*.zip 2>/dev/null | head -1)"
-    [ -n "$zip" ] || die "no plugin ZIP produced"
+    local zip="$1" expected="$2" name="$3" listing
+    [ -f "$zip" ] || die "no plugin ZIP at $zip"
 
-    mkdir -p "$WORK/dist"
-    cp "$zip" "$WORK/dist/"
-
-    step "Plugin ZIP contents"
+    step "Plugin ZIP contents ($(basename "$zip"))"
     unzip -l "$zip"
 
     listing="$(unzip -Z1 "$zip")"
     step "Verify ZIP layout"
     # DWC installs the ZIP itself, so plugin.json must sit at the root.
     grep -qx 'plugin.json' <<<"$listing" || die "plugin.json is not at the ZIP root"
-    grep -qE '^dwc/js/Vigil\..*\.js$' <<<"$listing" || die "ZIP carries no built DWC JS resource"
+    # 3.6 (webpack) emits Vigil.<hash>.js, 3.7 (Vite) emits Vigil-<hash>.js
+    grep -qE '^dwc/js/Vigil[.-].*\.js$' <<<"$listing" || die "ZIP carries no built DWC JS resource"
     grep -qx 'dsf/vigil-daemon.py' <<<"$listing" || die "ZIP is missing the daemon"
-    # pytest leaves dsf/__pycache__ behind; CI builds from a clean checkout and
-    # never ships it, so a local build must not either.
     if grep -q '__pycache__' <<<"$listing"; then die "ZIP contains __pycache__ entries"; fi
-
-    # dwcVersion/sbcDsfVersion are "auto-major" in the repo; the DWC builder
-    # rewrites both to the major.minor of the DuetWebControl checkout used.
-    expected="$(node -p 'require("'"$DWC_DIR"'/package.json").version.split(".").slice(0,2).join(".")')"
+    # The 3.7 builder writes a sourcemap archive next to the package; one that slipped
+    # into the staged tree would install as an unusable ZIP-in-ZIP.
+    if grep -qE '\.zip$' <<<"$listing"; then die "ZIP contains a nested *.zip entry"; fi
 
     step "Verify manifest"
     unzip -p "$zip" plugin.json | node -e '
@@ -143,6 +185,8 @@ collect_zip() {
             const expected = process.argv[1];
             const fail = (msg) => { console.error(msg); process.exit(1); };
             if (manifest.id !== "Vigil") fail(`id is ${manifest.id}, expected Vigil`);
+            // dwcVersion/sbcDsfVersion are "auto-major" in the repo; each builder
+            // rewrites both to the major.minor of the DWC checkout doing the build.
             if (manifest.dwcVersion !== expected) {
                 fail(`dwcVersion is ${manifest.dwcVersion}, expected ${expected}`);
             }
@@ -153,30 +197,118 @@ collect_zip() {
                 fail(`sbcExecutable is ${manifest.sbcExecutable}, expected vigil-daemon.py`);
             }
             if (/auto/.test(manifest.version)) fail("version was not stamped");
+            // build-plugin-pkg (both generations) is what populates these; the plain
+            // build-plugin does not, and DSF needs them to know what to install.
+            for (const key of ["dwcFiles", "dsfFiles"]) {
+                if (!Array.isArray(manifest[key]) || manifest[key].length === 0) {
+                    fail(`${key} is missing or empty — was the package built with build-plugin-pkg?`);
+                }
+            }
+            if (!manifest.dsfFiles.includes("vigil-daemon.py")) {
+                fail(`dsfFiles does not list vigil-daemon.py: ${manifest.dsfFiles.join(", ")}`);
+            }
             console.log(`version=${manifest.version} dwcVersion=${manifest.dwcVersion} sbcDsfVersion=${manifest.sbcDsfVersion}`);
         });
     ' "$expected" || die "manifest verification failed"
 
-    ok "Built $(basename "$zip") -> .ci-local/dist/"
+    mkdir -p "$DIST"
+    # One ZIP per generation: an earlier version's file would otherwise linger next to
+    # this build's and be picked up as if it were current.
+    rm -f "$DIST"/Vigil-*"${name##*-}"
+    cp "$zip" "$DIST/$name"
+    ok "Built $name -> .ci-local/dist/"
+}
+
+stage_build36() {
+    step "Build DWC 3.6 package (DuetWebControl $DWC36_REF)"
+    checkout_dwc "$DWC36_DIR" "$DWC36_REF"
+
+    step "Install DuetWebControl 3.6 dependencies"
+    (cd "$DWC36_DIR" && npm install)
+
+    step "Compile-check the DWC 3.6 SFCs"
+    (cd "$ROOT" && DWC36_DIR="$DWC36_DIR" npm run --silent check-ui36)
+
+    strip_pycache
+    stamp_version
+
+    step "Stage the DWC 3.6 source tree"
+    (cd "$ROOT" && node scripts/stage-dwc36.mjs "$STAGE36")
+
+    # The 3.6 builder removes its copy under src/plugins/ only on success, and picks up
+    # whatever is in dist/ afterwards — so start both from a known state.
+    rm -rf "$DWC36_DIR/src/plugins/Vigil"
+    rm -f "$DWC36_DIR"/dist/Vigil-*.zip
+
+    step "Run build-plugin-pkg on the staged tree"
+    (cd "$DWC36_DIR" && npm run build-plugin-pkg -- "$STAGE36") || die "DWC 3.6 plugin build failed"
+
+    collect_zip "$DWC36_DIR/dist/Vigil-$VERSION.zip" "$(dwc_major_minor "$DWC36_DIR")" "Vigil-$VERSION-dwc36.zip"
+}
+
+node_major() {
+    node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
+}
+
+# Run a shell snippet under Node >= 22, which Vite 8 (and therefore the DWC 3.7 builder)
+# requires. Falls back to a container rather than dying, so `all` still works on a host
+# whose Node is older -- the same trick the `matrix` stage uses for old Pythons. The
+# repo is mounted at its own absolute path so every path in the snippet stays valid.
+node22() {
+    if [ "$(node_major)" -ge 22 ]; then
+        bash -c "$1"
+        return
+    fi
+    if [ "${BUILD37_DOCKER:-auto}" = "0" ]; then
+        die "the DWC 3.7 build needs Node >= 22 (have $(node -v)); switch Node or unset BUILD37_DOCKER=0"
+    fi
+    command -v docker >/dev/null \
+        || die "the DWC 3.7 build needs Node >= 22 (have $(node -v)) and docker is not available"
+    docker run --rm \
+        -u "$(id -u):$(id -g)" \
+        -e HOME=/tmp/nodehome \
+        -e npm_config_cache=/tmp/nodehome/.npm \
+        -v "$ROOT:$ROOT" \
+        -w "$PWD" \
+        node:22-slim \
+        bash -c "$1"
+}
+
+stage_build37() {
+    step "Build DWC 3.7 package (DuetWebControl $DWC37_REF)"
+    if [ "$(node_major)" -lt 22 ]; then
+        step "Host node is $(node -v); running the 3.7 build in node:22-slim"
+    fi
+    checkout_dwc "$DWC37_DIR" "$DWC37_REF"
+
+    step "Install DuetWebControl 3.7 dependencies"
+    (cd "$DWC37_DIR" && node22 "npm install")
+
+    # installPluginDependencies() runs `npm install` in the plugin dir for anything in
+    # dependencies or devDependencies that is missing, then undoes it. A complete root
+    # install makes that a no-op -- and keeps npm from ever resolving the plugin's deps
+    # next to a Vite build.
+    step "Install plugin dependencies"
+    (cd "$ROOT" && npm ci)
+
+    strip_pycache
+    stamp_version
+
+    # The 3.7 builder's outputs land in the plugin dir, i.e. here; start from nothing so
+    # a stale ZIP from an earlier run cannot be mistaken for this build's.
+    clean_build37_outputs
+
+    step "Run build-plugin-pkg"
+    (cd "$DWC37_DIR" && node22 "node scripts/build-plugin-pkg.js '$ROOT'") \
+        || die "DWC 3.7 plugin build failed"
+
+    collect_zip "$ROOT/Vigil-$VERSION.zip" "$(dwc_major_minor "$DWC37_DIR")" "Vigil-$VERSION-dwc37.zip"
+    clean_build37_outputs
 }
 
 stage_build() {
-    step "Build plugin package (DuetWebControl $DWC_REF)"
-    checkout_dwc
-
-    # The builder copies dsf/ verbatim; drop the bytecode pytest left behind so
-    # the local package matches the one CI builds from a fresh checkout.
-    find "$ROOT/dsf" -name __pycache__ -type d -prune -exec rm -rf {} +
-
-    step "Install DuetWebControl dependencies"
-    (cd "$DWC_DIR" && npm install)
-
-    stamp_version
-    step "Run build-plugin"
-    (cd "$DWC_DIR" && npm run build-plugin "$ROOT") || { restore_version; die "plugin build failed"; }
-    restore_version
-
-    collect_zip
+    stage_build36
+    stage_build37
 }
 
 stages=("$@")
@@ -187,8 +319,10 @@ for s in "${stages[@]}"; do
         python)   stage_python ;;
         matrix)   stage_matrix ;;
         frontend) stage_frontend ;;
+        build36)  stage_build36 ;;
+        build37)  stage_build37 ;;
         build)    stage_build ;;
-        *)        die "unknown stage: $s (python|matrix|frontend|build|all)" ;;
+        *)        die "unknown stage: $s (python|matrix|frontend|build36|build37|build|all)" ;;
     esac
 done
 

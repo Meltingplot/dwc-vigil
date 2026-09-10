@@ -1,0 +1,375 @@
+<template>
+  <v-container fluid class="vigil-dashboard pa-4">
+    <!-- Page Header -->
+    <div class="d-flex align-center mb-1">
+      <v-icon size="large" color="primary" class="mr-3">mdi-chart-box-outline</v-icon>
+      <div>
+        <div class="text-h5 font-weight-bold">Vigil</div>
+        <div class="text-caption text-medium-emphasis">Machine usage monitoring &amp; service tracking</div>
+      </div>
+      <v-spacer />
+      <div class="d-flex align-center" style="gap: 8px">
+        <export-button :loading="exporting" @export="handleExport" />
+        <v-btn variant="outlined" size="small" @click="openServiceLog">
+          <v-icon start size="small">mdi-history</v-icon>
+          Service Log
+        </v-btn>
+      </div>
+    </div>
+
+    <v-divider class="mb-4" />
+
+    <!-- Backend down (e.g. right after a plugin update) -->
+    <v-alert v-if="backendRunning === false" type="warning" prominent variant="tonal" class="mb-4">
+      <div class="d-flex flex-wrap align-center">
+        <div class="flex-grow-1 mr-4">
+          <div class="text-subtitle-1 font-weight-medium">Backend is not running</div>
+          <div class="text-body-2">
+            The SBC part of this plugin is stopped, so no tracking data can be loaded.
+            This happens after a plugin update — DSF stops the old backend process and
+            does not start the new one.
+          </div>
+        </div>
+        <v-btn color="warning" :loading="startingBackend" @click="startBackend">
+          <v-icon start>mdi-play</v-icon>
+          Start Backend
+        </v-btn>
+      </div>
+    </v-alert>
+
+    <!-- Counter tier tabs -->
+    <counter-tabs v-model="activeTab" />
+
+    <v-row v-if="statusData" class="mt-3">
+      <!-- Key metrics -->
+      <v-col cols="12">
+        <v-row>
+          <v-col v-for="card in statCards" :key="card.label" cols="6" sm="4" md="">
+            <stat-card
+              :label="card.label"
+              :value="card.value"
+              :type="card.type"
+              :icon="card.icon"
+              :color="card.color"
+            />
+          </v-col>
+        </v-row>
+      </v-col>
+
+      <!-- Jobs & Heaters section -->
+      <v-col cols="12" md="5">
+        <jobs-pie-chart
+          :successful="currentTier.jobs_successful || 0"
+          :cancelled="currentTier.jobs_cancelled || 0"
+        />
+      </v-col>
+      <v-col cols="12" md="7">
+        <heater-chart :heaters="currentTier.heaters || {}" />
+      </v-col>
+
+      <!-- Travel & Fans section -->
+      <v-col cols="12" md="5">
+        <axis-table
+          :axes="currentTier.axes || {}"
+          :filament="currentTier.filament_mm || {}"
+        />
+      </v-col>
+      <v-col cols="12" md="7">
+        <fan-chart :fans="currentTier.fans || {}" />
+      </v-col>
+
+      <!-- System vitals -->
+      <v-col cols="12">
+        <vitals-card
+          :vitals="statusData.vitals || {}"
+          :uptime="statusData.uptime || {}"
+          :volume-free-bytes="statusData.volume_free_bytes"
+        />
+      </v-col>
+
+      <!-- History -->
+      <v-col cols="12">
+        <history-chart
+          :days="historyDays"
+          :loading="loadingHistory"
+        />
+      </v-col>
+
+      <!-- Service actions (only shown for service tier) -->
+      <v-col v-if="activeTab === 1" cols="12">
+        <v-card class="vigil-card">
+          <v-card-text class="d-flex align-center" style="gap: 12px">
+            <v-icon color="amber-darken-1" class="mr-1">mdi-wrench-outline</v-icon>
+            <span class="text-subtitle-2 font-weight-medium">Service Actions</span>
+            <v-spacer />
+            <v-btn color="warning" size="small" @click="showResetDialog = true">
+              <v-icon start size="small">mdi-restart</v-icon>
+              Reset Counter
+            </v-btn>
+            <v-btn color="primary" size="small" @click="showEventDialog = true">
+              <v-icon start size="small">mdi-wrench</v-icon>
+              Log Service Event
+            </v-btn>
+          </v-card-text>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <!-- Loading state -->
+    <div v-else-if="backendRunning !== false" class="text-center py-12">
+      <v-progress-circular indeterminate size="48" color="primary" />
+      <div class="mt-4 text-subtitle-2 text-medium-emphasis">Loading Vigil data&hellip;</div>
+    </div>
+
+    <!-- Dialogs -->
+    <service-reset-dialog
+      v-model="showResetDialog"
+      :service-data="statusData ? statusData.service : {}"
+      :loading="resetting"
+      @reset="handleReset"
+    />
+
+    <service-event-dialog
+      v-model="showEventDialog"
+      :loading="savingEvent"
+      @submit="handleServiceEvent"
+    />
+
+    <service-log-dialog
+      v-model="showLogDialog"
+      :entries="serviceLogEntries"
+      :loading="loadingLog"
+    />
+
+    <!-- Snackbar -->
+    <v-snackbar v-model="snackbar.show" :color="snackbar.color" :timeout="4000">
+      {{ snackbar.text }}
+      <template #actions>
+        <v-btn variant="text" @click="snackbar.show = false">Close</v-btn>
+      </template>
+    </v-snackbar>
+  </v-container>
+</template>
+
+<script>
+import CounterTabs from './components/CounterTabs.vue'
+import StatCard from './components/StatCard.vue'
+import JobsPieChart from './components/JobsPieChart.vue'
+import HeaterChart from './components/HeaterChart.vue'
+import FanChart from './components/FanChart.vue'
+import AxisTable from './components/AxisTable.vue'
+import VitalsCard from './components/VitalsCard.vue'
+import HistoryChart from './components/HistoryChart.vue'
+import ExportButton from './components/ExportButton.vue'
+import ServiceResetDialog from './components/ServiceResetDialog.vue'
+import ServiceEventDialog from './components/ServiceEventDialog.vue'
+import ServiceLogDialog from './components/ServiceLogDialog.vue'
+import { apiBlob, apiGet, apiPost, downloadBlob, waitForBackend } from '../core/api'
+import { isBackendRunning, startBackend } from '../core/backend'
+import { createHost } from './host'
+
+const TIER_KEYS = ['lifetime', 'service', 'session']
+const POLL_INTERVAL = 5000
+
+export default {
+    name: 'VigilDashboard',
+    components: {
+        CounterTabs, StatCard, JobsPieChart, HeaterChart, FanChart,
+        AxisTable, VitalsCard, HistoryChart, ExportButton,
+        ServiceResetDialog, ServiceEventDialog, ServiceLogDialog,
+    },
+    props: {
+        // The DWC seam (see core/host.js). Injectable so the component can be
+        // mounted against a fake host in tests; DWC itself never passes it.
+        host: { type: Object, default: () => createHost() },
+    },
+    data() {
+        return {
+            activeTab: 0,
+            statusData: null,
+            historyDays: [],
+            serviceLogEntries: [],
+
+            // Loading states
+            loadingHistory: false,
+            loadingLog: false,
+            exporting: false,
+            resetting: false,
+            savingEvent: false,
+            startingBackend: false,
+
+            // Dialogs
+            showResetDialog: false,
+            showEventDialog: false,
+            showLogDialog: false,
+
+            // Snackbar
+            snackbar: { show: false, text: '', color: 'success' },
+
+            // Polling
+            pollTimer: null,
+            historyLoaded: false,
+        }
+    },
+    computed: {
+        // true / false, or null while the object model has not reported a PID yet.
+        // host.pluginEntry() reads through the store, so this stays reactive.
+        backendRunning() {
+            const entry = this.host.pluginEntry()
+            return entry === undefined ? null : isBackendRunning(entry)
+        },
+        currentTier() {
+            if (!this.statusData) return {}
+            return this.statusData[TIER_KEYS[this.activeTab]] || {}
+        },
+        statCards() {
+            const t = this.currentTier
+            return [
+                { label: 'Machine Time', value: t.machine_seconds || 0, type: 'time', icon: 'mdi-power', color: 'blue' },
+                { label: 'Print Time', value: t.print_seconds || 0, type: 'time', icon: 'mdi-printer-3d', color: 'green' },
+                { label: 'Pause Time', value: t.pause_seconds || 0, type: 'time', icon: 'mdi-pause-circle-outline', color: 'orange' },
+                { label: 'Warmup', value: t.warmup_seconds || 0, type: 'time', icon: 'mdi-thermometer-chevron-up', color: 'deep-orange' },
+                { label: 'Jobs', value: t.jobs_total || 0, type: 'number', icon: 'mdi-format-list-numbered', color: 'indigo' },
+                { label: 'Successful', value: t.jobs_successful || 0, type: 'number', icon: 'mdi-check-circle-outline', color: 'green' },
+                { label: 'Cancelled', value: t.jobs_cancelled || 0, type: 'number', icon: 'mdi-close-circle-outline', color: 'red' },
+            ]
+        },
+    },
+    watch: {
+        activeTab() {
+            if (!this.historyLoaded) {
+                this.loadHistory()
+            }
+        },
+        backendRunning(val, oldVal) {
+            // Pick the data up once the backend comes back (started here or elsewhere)
+            if (val === true && oldVal === false) {
+                this.loadStatus()
+            }
+        }
+    },
+    mounted() {
+        this.loadStatus()
+        this.pollTimer = setInterval(() => this.loadStatus(), POLL_INTERVAL)
+    },
+    beforeUnmount() {
+        if (this.pollTimer) clearInterval(this.pollTimer)
+    },
+    methods: {
+        // --- Data loading ---
+        async loadStatus() {
+            try {
+                this.statusData = await apiGet('status')
+                if (!this.historyLoaded) {
+                    this.loadHistory()
+                }
+            } catch {
+                // Non-critical: silent fail, keep previous data
+            }
+        },
+        async loadHistory() {
+            this.loadingHistory = true
+            try {
+                const result = await apiGet('history?days=30')
+                this.historyDays = result.days || []
+                this.historyLoaded = true
+            } catch {
+                // Non-critical
+            } finally {
+                this.loadingHistory = false
+            }
+        },
+
+        // --- Backend recovery ---
+        async startBackend() {
+            this.startingBackend = true
+            try {
+                await startBackend(this.host)
+                if (!await this.waitForBackend()) {
+                    throw new Error('backend did not come up in time')
+                }
+                await this.loadStatus()
+                this.notify('Backend started', 'success')
+            } catch (e) {
+                this.notify(`Failed to start backend: ${e.message || e}`, 'error')
+            } finally {
+                this.startingBackend = false
+            }
+        },
+        // Thin wrapper so tests can stub the wait without stubbing global fetch
+        waitForBackend(attempts, delay) {
+            return waitForBackend(attempts, delay)
+        },
+
+        // --- Actions ---
+        async handleExport(format) {
+            this.exporting = true
+            try {
+                if (format === 'csv') {
+                    downloadBlob(await apiBlob('export?format=csv'), 'vigil_export.csv')
+                } else {
+                    const data = await apiGet('export?format=json')
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+                    downloadBlob(blob, 'vigil_export.json')
+                }
+                this.notify('Export complete', 'success')
+            } catch (e) {
+                this.notify(`Export failed: ${e.message}`, 'error')
+            } finally {
+                this.exporting = false
+            }
+        },
+
+        async handleReset(resetData) {
+            this.resetting = true
+            try {
+                await apiPost('service/reset', resetData)
+                this.showResetDialog = false
+                this.notify('Counter reset successful', 'success')
+                await this.loadStatus()
+            } catch (e) {
+                this.notify(`Reset failed: ${e.message}`, 'error')
+            } finally {
+                this.resetting = false
+            }
+        },
+
+        async handleServiceEvent(eventData) {
+            this.savingEvent = true
+            try {
+                await apiPost('service/event', eventData)
+                this.showEventDialog = false
+                this.notify('Service event logged', 'success')
+            } catch (e) {
+                this.notify(`Failed to log event: ${e.message}`, 'error')
+            } finally {
+                this.savingEvent = false
+            }
+        },
+
+        async openServiceLog() {
+            this.showLogDialog = true
+            this.loadingLog = true
+            try {
+                const result = await apiGet('service/log')
+                this.serviceLogEntries = result.log || []
+            } catch (e) {
+                this.notify(`Failed to load service log: ${e.message}`, 'error')
+            } finally {
+                this.loadingLog = false
+            }
+        },
+
+        // --- Helpers ---
+        notify(text, color = 'success') {
+            this.snackbar = { show: true, text, color }
+        },
+    },
+}
+</script>
+
+<style scoped>
+.vigil-dashboard .vigil-card {
+    border-radius: 8px;
+}
+</style>

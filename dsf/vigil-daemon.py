@@ -14,7 +14,39 @@ import sys
 import time
 import traceback
 
-# Monkey-patch dsf-python: PluginManifest._data deserialization bug
+# --------------------------------------------------------------------------------
+# dsf-python compatibility patches.
+#
+# The plugin ships one daemon for two DSF generations (the DWC 3.6 package carries
+# sbcDsfVersion 3.6, the 3.7 package 3.7), and dsf-python 3.7 is a substantial rewrite:
+# hand-written properties became `model_prop` descriptors and `BaseConnection.connect`
+# was renamed to `_connect`. Every patch below therefore states which generations it is
+# for, targets whichever spelling the installed library actually has, and swallows any
+# failure -- an unpatchable library must not stop the daemon from starting, since most
+# of these guard against inputs that may never occur.
+#
+# Verified against dsf-python v3.6-dev and v3.7-dev (3.7.0-beta.1) on 2026-09-10.
+# --------------------------------------------------------------------------------
+
+
+def _patch_property_setter(cls, name, setter):
+    """Replace the setter of a model property, keeping its getter.
+
+    Works on both generations: 3.6 hand-writes these as `property` objects and 3.7
+    generates them with `model_prop`, but both end up as a `property` on the class and
+    both store the value in `_<name>`.
+    """
+    prop = getattr(cls, name, None)
+    if not isinstance(prop, property):
+        return False
+    setattr(cls, name, prop.setter(setter))
+    return True
+
+
+# dsf-python 3.6 only: PluginManifest.__init__ creates _data as a plain dict, which the
+# deserializer skips, so plugin.data is always empty. 3.7 declares it as a
+# `model_prop('data', ModelDictionary, ...)` and needs no help; re-seeding _data there
+# is a no-op of the same shape.
 try:
     from dsf.object_model.plugins.plugin_manifest import PluginManifest as _PM
     from dsf.object_model.model_dictionary import ModelDictionary as _MD
@@ -26,10 +58,12 @@ try:
         self._data = _MD(False)
 
     _PM.__init__ = _patched_pm_init
-except ImportError:
+except Exception:
     pass
 
-# Monkey-patch dsf-python: BoardState enum missing values (e.g. timedOut)
+# Both generations: the BoardState enum is missing values DSF reports (e.g. timedOut).
+# Assigning one raises ValueError from the property setter, which takes down the whole
+# get_object_model() call rather than just that board.
 try:
     import dsf.object_model.boards.boards as _boards_mod
     from dsf.object_model.boards.boards import Board as _Board
@@ -56,13 +90,14 @@ try:
         except (ValueError, KeyError):
             self._state = _PatchedBoardState.unknown
 
-    _Board.state = _Board.state.setter(_safe_state_setter)
-except ImportError:
+    _patch_property_setter(_Board, "state", _safe_state_setter)
+except Exception:
     pass
 
-# Monkey-patch dsf-python: NetworkInterfaceType enum missing values (e.g. 'ethernet'
-# reported by DSF 3.6.3-rc.1). The setter raises ValueError on unknown strings,
-# which crashes the entire get_object_model() call.
+# dsf-python 3.6 only: NetworkInterfaceType is missing 'ethernet', which DSF 3.6.3-rc.1
+# reports; the setter raises ValueError on unknown strings and crashes the whole
+# get_object_model() call. 3.7 has the value, but the safe setter still guards against
+# the next one nobody has seen yet.
 try:
     import dsf.object_model.network.network_interface_type as _nit_mod
     import dsf.object_model.network.network_interface as _ni_mod
@@ -91,12 +126,12 @@ try:
         except (ValueError, KeyError):
             self._type = _PatchedNetworkInterfaceType.unknown
 
-    _NetworkInterface.type = _NetworkInterface.type.setter(_safe_type_setter)
-except ImportError:
+    _patch_property_setter(_NetworkInterface, "type", _safe_type_setter)
+except Exception:
     pass
 
-# Monkey-patch dsf-python: Axis.letter crashes on invalid values (e.g. '\x00'
-# from uninitialized axes when the plugin loads before firmware configures them)
+# Both generations: Axis.letter crashes on invalid values (e.g. '\x00' from
+# uninitialized axes when the plugin loads before firmware has configured them).
 try:
     from dsf.object_model.move.axis import Axis as _Axis, AxisLetter as _AxisLetter
 
@@ -113,15 +148,20 @@ try:
         except (ValueError, KeyError):
             self._letter = _AxisLetter.none
 
-    _Axis.letter = _Axis.letter.setter(_safe_letter_setter)
-except ImportError:
+    _patch_property_setter(_Axis, "letter", _safe_letter_setter)
+except Exception:
     pass
 
-# Monkey-patch dsf-python: BaseConnection.connect reads the server init message
-# with a fixed-size self.socket.recv(50). DSF 3.6 sends a greeting longer than
-# 50 bytes, so the JSON is truncated mid-string and json.loads raises
-# "JSONDecodeError: Unterminated string". Read until a complete JSON object has
-# arrived instead, keeping any trailing bytes for the next read.
+# Both generations: the server init message is read with a fixed-size
+# self.socket.recv(50). DSF sends a greeting longer than 50 bytes (e.g. one carrying a
+# GUID id), so the JSON is truncated mid-string and json.loads raises
+# "JSONDecodeError: Unterminated string". Read until a complete JSON object has arrived
+# instead, keeping any trailing bytes for the next read.
+#
+# dsf-python 3.7 renamed this method from `connect` to `_connect` (CommandConnection and
+# SubscribeConnection now call `super()._connect(...)`), so patch whichever names the
+# installed class actually has -- writing only the 3.6 name would leave 3.7 running the
+# unpatched recv(50).
 try:
     import socket as _socket
     from dsf.connections.base_connection import BaseConnection as _BaseConnection
@@ -153,14 +193,16 @@ try:
         self.send(init_message)
 
         response = self.receive_response()
-        if not response.success:
+        if not getattr(response, "success", True):
             raise Exception(
                 f"Could not set connection type {init_message.mode} "
                 f"({response.error_type}: {response.error_message})"
             )
 
-    _BaseConnection.connect = _patched_connect
-except ImportError:
+    for _name in ("connect", "_connect"):
+        if hasattr(_BaseConnection, _name):
+            setattr(_BaseConnection, _name, _patched_connect)
+except Exception:
     pass
 
 from dsf.connections import CommandConnection, SubscribeConnection, SubscriptionMode
