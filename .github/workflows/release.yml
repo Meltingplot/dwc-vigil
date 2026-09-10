@@ -15,8 +15,10 @@ name: Release
 #   `vX.Y.Z` git tag and GitHub Release itself, so no tag needs to be pushed
 #   beforehand. To cut a new release, bump plugin.json on the `release` branch.
 # Pre-releases: a version with a pre-release suffix (`X.Y.Z-alpha.N`, `-beta.N`,
-#   `-rc.N`) is published as a GitHub pre-release. Run the workflow manually on the
-#   branch to publish, with the version input, e.g. `1.3.0-beta.1`.
+#   `-rc.N`) is published as a GitHub pre-release. RULE: a pre-release may only be cut
+#   from `main` — run the workflow manually on `main` with the version input, e.g.
+#   `1.3.0-beta.1`. The `guard` job refuses a pre-release version on any other ref, so
+#   a release tag can never point at an unmerged feature branch.
 on:
   push:
     branches: [release]
@@ -31,9 +33,51 @@ permissions:
   contents: write
 
 jobs:
+  # Resolves the version first and refuses bad combinations before any test or build
+  # runs: a malformed version, or a pre-release version on anything but `main`.
+  guard:
+    name: Check release source
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Determine Vigil version
+        id: version
+        run: |
+          version="${{ github.event.inputs.version }}"
+          if [ -z "$version" ]; then
+            version=$(node -p "require('./plugin.json').version")
+          fi
+          version="${version#v}"
+          prerelease=false
+          if echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$'; then
+            prerelease=true
+          elif ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$version' is not a release version (X.Y.Z or X.Y.Z-(alpha|beta|rc).N). Bump plugin.json or pass the version input."
+            exit 1
+          fi
+          echo "Vigil release version: $version (pre-release: $prerelease)"
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Pre-releases may only be cut from main
+        if: steps.version.outputs.prerelease == 'true' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Pre-release ${{ steps.version.outputs.tag }} was requested on '${{ github.ref_name }}'. Pre-releases may only be cut from 'main' — merge the branch first, then run this workflow on main."
+          exit 1
+
   python-tests:
     name: Python Tests
     runs-on: ubuntu-latest
+    needs: guard
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -57,6 +101,7 @@ jobs:
   frontend-tests:
     name: Frontend Lint & Tests
     runs-on: ubuntu-latest
+    needs: guard
 
     steps:
       - uses: actions/checkout@v6
@@ -89,7 +134,7 @@ jobs:
   release:
     name: Build & Publish Release
     runs-on: ubuntu-latest
-    needs: [python-tests, frontend-tests]
+    needs: [guard, python-tests, frontend-tests]
 
     steps:
       - name: Checkout plugin
@@ -129,31 +174,22 @@ jobs:
             echo "prerelease37=$prerelease37"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Determine Vigil version
+      # The version itself was resolved and validated by the `guard` job.
+      - name: Stamp Vigil version
         id: version
         working-directory: plugin
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
         run: |
-          version="${{ github.event.inputs.version }}"
-          if [ -z "$version" ]; then
-            version=$(node -p "require('./plugin.json').version")
-          fi
-          version="${version#v}"
-          prerelease=false
-          if echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$'; then
-            prerelease=true
-          elif ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::'$version' is not a release version (X.Y.Z or X.Y.Z-(alpha|beta|rc).N). Bump plugin.json or pass the version input."
-            exit 1
-          fi
-          echo "Vigil release version: $version (pre-release: $prerelease)"
+          echo "Vigil release version: $VERSION (pre-release: ${{ needs.guard.outputs.prerelease }})"
           {
-            echo "version=$version"
-            echo "tag=v$version"
-            echo "prerelease=$prerelease"
+            echo "version=$VERSION"
+            echo "tag=${{ needs.guard.outputs.tag }}"
+            echo "prerelease=${{ needs.guard.outputs.prerelease }}"
           } >> "$GITHUB_OUTPUT"
           # Stamp the resolved version into plugin.json/package.json for both builds, so
           # the two packages cannot end up carrying different versions.
-          node -e "const fs=require('fs');for(const f of ['plugin.json','package.json']){const j=JSON.parse(fs.readFileSync(f));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n');}" "$version"
+          node -e "const fs=require('fs');for(const f of ['plugin.json','package.json']){const j=JSON.parse(fs.readFileSync(f));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n');}" "$VERSION"
 
       - name: Ensure release does not already exist
         env:
