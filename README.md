@@ -121,7 +121,35 @@ npm install
 npm run build-plugin ../dwc-vigil
 ```
 
-The resulting ZIP will be in `DuetWebControl/dist/`.
+The resulting ZIP will be in `DuetWebControl/dist/`. That ZIP *is* the installable
+plugin package (`plugin.json` sits at its root) — upload it as-is.
+
+### Running CI locally
+
+`scripts/ci-local.sh` reproduces the GitHub Actions pipeline
+(`.github/workflows/ci.yml`) on a workstation. Everything it needs lives in the
+gitignored `.ci-local/` directory (Python virtualenv, DuetWebControl checkout, built
+ZIPs) — nothing is installed system-wide.
+
+```bash
+scripts/ci-local.sh            # python, frontend, build (default)
+scripts/ci-local.sh python     # pytest in .ci-local/venv
+scripts/ci-local.sh frontend   # npm ci + lint + jest unit + jest integration
+scripts/ci-local.sh build      # DuetWebControl checkout + build-plugin + ZIP checks
+scripts/ci-local.sh matrix     # pytest on Python 3.10-3.12 via Docker
+```
+
+The `matrix` stage needs Docker; it mirrors the CI's Python version matrix, which a
+single local interpreter cannot cover.
+
+The `build` stage temporarily runs `scripts/version.js --write` (as CI does) and restores
+`plugin.json` / `package.json` afterwards, so the working tree stays clean. It also drops
+`dsf/__pycache__` before building — the DWC builder copies `dsf/` verbatim, so bytecode
+left behind by a previous `pytest` run would otherwise end up inside the plugin ZIP. The
+resulting ZIP is copied to `.ci-local/dist/` after its layout and manifest are verified.
+
+Overrides: `DWC_REF=<ref>` selects the DuetWebControl ref (default `v3.6-dev`),
+`PYTHON=<interpreter>` selects the interpreter used for the venv.
 
 ## License
 
