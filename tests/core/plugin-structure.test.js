@@ -60,6 +60,25 @@ describe('Plugin structure', () => {
         expect(fs.readdirSync(path.join(ROOT, 'src/ui36/components')).length).toBeGreaterThan(0)
     })
 
+    it('src/ui37/ mirrors the DWC 3.6 shell file for file', () => {
+        // Every UI change lands twice; a component ported on one side only is the
+        // failure mode that costs the most to find on a real machine.
+        const list = (shell) => [
+            ...fs.readdirSync(path.join(ROOT, 'src', shell)).filter((f) => f.endsWith('.vue') || f.endsWith('.js')),
+            ...fs.readdirSync(path.join(ROOT, 'src', shell, 'components')).map((f) => `components/${f}`),
+        ].sort()
+        expect(list('ui37')).toEqual(list('ui36'))
+    })
+
+    it('entry point compiles the DWC 3.7 shell', () => {
+        // The 3.7 builder is pointed at the repo and always compiles src/index.js;
+        // the 3.6 build gets its own generated entry from scripts/stage-dwc36.mjs.
+        const entry = fs.readFileSync(path.join(ROOT, 'src/index.js'), 'utf8')
+        expect(entry).toMatch(/['"]\.\/ui37\/index['"]/)
+        const stage = fs.readFileSync(path.join(ROOT, 'scripts/stage-dwc36.mjs'), 'utf8')
+        expect(stage).toMatch(/['"]\.\/ui36\/index['"]/)
+    })
+
     it('keeps the Jest-only DWC stubs out of src/', () => {
         // The DWC 3.7 builder is pointed straight at the repo and compiles all of
         // src/; a stray @/routes or @/store stub there would shadow DWC's own.

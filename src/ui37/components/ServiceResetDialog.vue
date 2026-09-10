@@ -11,8 +11,8 @@
           v-model="scope"
           :items="scopes"
           label="Scope"
-          outlined
-          dense
+          variant="outlined"
+          density="compact"
           prepend-inner-icon="mdi-target"
         />
 
@@ -24,7 +24,7 @@
             v-model="selectedKeys"
             :label="key"
             :value="key"
-            dense
+            density="compact"
             hide-details
             class="mt-0"
           />
@@ -34,8 +34,8 @@
           v-model="component"
           :items="components"
           label="Component (optional)"
-          outlined
-          dense
+          variant="outlined"
+          density="compact"
           clearable
           prepend-inner-icon="mdi-cog-outline"
         />
@@ -44,28 +44,28 @@
           v-model="description"
           label="Reason"
           placeholder="Why are you resetting this counter?"
-          outlined
-          dense
+          variant="outlined"
+          density="compact"
           rows="2"
           prepend-inner-icon="mdi-text"
           :rules="[v => (v && v.length >= 3) || 'Min. 3 characters']"
         />
 
-        <v-alert v-if="scope" type="warning" dense text class="mb-0">
+        <v-alert v-if="scope" type="warning" density="compact" variant="tonal" class="mb-0">
           Selected counter values will be reset to zero.
         </v-alert>
       </v-card-text>
       <v-divider />
       <v-card-actions class="pa-4">
         <v-spacer />
-        <v-btn text @click="close">Cancel</v-btn>
+        <v-btn variant="text" @click="close">Cancel</v-btn>
         <v-btn
           color="warning"
           :disabled="!isValid"
           :loading="loading"
           @click="submit"
         >
-          <v-icon left small>mdi-restart</v-icon>
+          <v-icon start size="small">mdi-restart</v-icon>
           Reset
         </v-btn>
       </v-card-actions>
@@ -77,44 +77,46 @@
 export default {
     name: 'ServiceResetDialog',
     props: {
-        value: { type: Boolean, default: false },
+        modelValue: { type: Boolean, default: false },
         serviceData: { type: Object, default: () => ({}) },
         loading: { type: Boolean, default: false },
     },
+    emits: ['update:modelValue', 'reset'],
     data() {
         return {
             scope: '',
             selectedKeys: [],
             component: '',
             description: '',
+            // Vuetify 4 reads `title` where Vuetify 2 read `text`
             scopes: [
-                { text: 'Machine Time', value: 'machine_time' },
-                { text: 'Print Time', value: 'print_time' },
-                { text: 'Pause Time', value: 'pause_time' },
-                { text: 'Warmup Time', value: 'warmup_time' },
-                { text: 'Jobs', value: 'jobs' },
-                { text: 'Axes', value: 'axes' },
-                { text: 'Extruders', value: 'extruders' },
-                { text: 'Filament', value: 'filament' },
-                { text: 'Heaters', value: 'heaters' },
-                { text: 'Fans', value: 'fans' },
+                { title: 'Machine Time', value: 'machine_time' },
+                { title: 'Print Time', value: 'print_time' },
+                { title: 'Pause Time', value: 'pause_time' },
+                { title: 'Warmup Time', value: 'warmup_time' },
+                { title: 'Jobs', value: 'jobs' },
+                { title: 'Axes', value: 'axes' },
+                { title: 'Extruders', value: 'extruders' },
+                { title: 'Filament', value: 'filament' },
+                { title: 'Heaters', value: 'heaters' },
+                { title: 'Fans', value: 'fans' },
             ],
             components: [
-                { text: 'Nozzle', value: 'nozzle' },
-                { text: 'Extruder', value: 'extruder' },
-                { text: 'Hotend Fan', value: 'fan_hotend' },
-                { text: 'Heater (Bed)', value: 'heater_bed' },
-                { text: 'Belt X', value: 'belt_x' },
-                { text: 'Belt Y', value: 'belt_y' },
-                { text: 'Mainboard', value: 'mainboard' },
-                { text: 'Other', value: 'other' },
+                { title: 'Nozzle', value: 'nozzle' },
+                { title: 'Extruder', value: 'extruder' },
+                { title: 'Hotend Fan', value: 'fan_hotend' },
+                { title: 'Heater (Bed)', value: 'heater_bed' },
+                { title: 'Belt X', value: 'belt_x' },
+                { title: 'Belt Y', value: 'belt_y' },
+                { title: 'Mainboard', value: 'mainboard' },
+                { title: 'Other', value: 'other' },
             ],
         }
     },
     computed: {
         visible: {
-            get() { return this.value },
-            set(val) { this.$emit('input', val) }
+            get() { return this.modelValue },
+            set(val) { this.$emit('update:modelValue', val) }
         },
         availableKeys() {
             if (!this.scope || !this.serviceData) return []

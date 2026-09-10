@@ -25,7 +25,17 @@ A [DuetWebControl](https://github.com/Duet3D/DuetWebControl) plugin that tracks 
 
 ## Installation
 
-Upload the plugin ZIP through DuetWebControl: **Settings > Plugins > Install Plugin**, then click **Start** next to Vigil.
+There is one ZIP per DuetWebControl generation — they are different framework stacks,
+and DWC refuses to install the wrong one (it compares the package's `dwcVersion` against
+its own, but only after the upload):
+
+| Your DuetWebControl | Download |
+|---|---|
+| 3.6.x | `Vigil-<version>-dwc36.zip` |
+| 3.7.x | `Vigil-<version>-dwc37.zip` |
+
+Upload it through DuetWebControl: **Settings > Plugins > Install Plugin**, then click
+**Start** next to Vigil.
 
 ### Updating
 
@@ -84,6 +94,11 @@ src/
     host.js                 # Vuex implementation of the host adapter
     VigilDashboard.vue      # Main dashboard view
     components/             # UI components (charts, cards, dialogs)
+  ui37/                     # DWC 3.7 shell (Vue 3.5 + Vuetify 4) — same files
+    index.js                # As above, plus unregisterRoute on dwcPluginUnloaded
+    host.js                 # Pinia implementation of the host adapter
+    VigilDashboard.vue
+    components/
 
 dsf/                        # Backend (Python, runs on SBC)
   vigil-daemon.py           # Main daemon — DSF subscription & lifecycle
@@ -124,22 +139,40 @@ cloning (`scripts/ci-local.sh frontend` does it for you).
 
 ### Building
 
-Vigil is built by DuetWebControl's own plugin builder, which resolves
-`"dwcVersion": "auto-major"` to the major.minor of whichever DWC checkout does the
-build. The 3.6 build never runs against the repo directly: `scripts/stage-dwc36.mjs`
-first assembles a tree holding only `src/core/`, `src/ui36/`, `dsf/` and `plugin.json`,
-because the 3.6 builder copies (and compiles from) the whole of `<pluginDir>/src`. It
-also vendors the plugin's own Chart.js 4 into that tree: DWC 3.6 ships Chart.js 2.9 and
-its own charts are written against it, so the plugin carries its copy rather than
-upgrading the checkout.
+DWC 3.6 and 3.7 are different framework stacks (Vue 2.7 / Vuetify 2 / Vuex against Vue
+3.5 / Vuetify 4 / Pinia), and DWC refuses to install a package built for the other one —
+it compares the manifest's `dwcVersion` against its own major.minor. So there are two
+packages, built by each generation's own plugin builder from one source tree and one
+`plugin.json` (`"dwcVersion": "auto-major"`, which each builder resolves for itself).
 
-The easy way is the local CI runner, which keeps its DWC checkout in `.ci-local/`:
+| Your DWC | Install |
+|---|---|
+| 3.6.x | `Vigil-<version>-dwc36.zip` |
+| 3.7.x | `Vigil-<version>-dwc37.zip` |
+
+The easy way to build either is the local CI runner, which keeps its DWC checkouts in
+`.ci-local/`:
 
 ```bash
 scripts/ci-local.sh build36     # -> .ci-local/dist/Vigil-<version>-dwc36.zip
+scripts/ci-local.sh build37     # -> .ci-local/dist/Vigil-<version>-dwc37.zip
+scripts/ci-local.sh build       # both
 ```
 
-By hand:
+**DWC 3.7** builds with Vite 8 and needs Node >= 22; the runner falls back to a
+`node:22-slim` container when the host Node is older (`BUILD37_DOCKER=0` to refuse
+instead). Its builder is pointed straight at the repo and compiles `src/index.js`, which
+imports `ui37` only. Note that it writes its outputs *into the plugin directory* — the
+working tree — so `dist/`, `pkg/` and `Vigil-*.zip` are gitignored and the runner
+removes them again on every exit path.
+
+**DWC 3.6** is never built against the repo directly. Its builder copies (and compiles
+from) the whole of `<pluginDir>/src`, which would mean feeding Vuetify 4 sources to a
+3.6 checkout, so `scripts/stage-dwc36.mjs` first assembles a tree holding only
+`src/core/`, `src/ui36/`, `dsf/`, `plugin.json` and a generated `src/index.js`. It also
+vendors the plugin's own Chart.js 4 into that tree: DWC 3.6 ships Chart.js 2.9 and its
+own charts are written against it, so the plugin carries its copy rather than upgrading
+the checkout. By hand:
 
 ```bash
 git clone --branch v3.6-dev https://github.com/Duet3D/DuetWebControl.git ../DuetWebControl
@@ -150,9 +183,8 @@ cd ../DuetWebControl
 npm run build-plugin-pkg -- /tmp/vigil-stage-36
 ```
 
-The resulting ZIP lands in `DuetWebControl/dist/` and *is* the installable plugin
-package (`plugin.json` sits at its root, `dwcFiles` / `dsfFiles` list its contents) —
-upload it as-is.
+Either ZIP *is* the installable plugin package (`plugin.json` sits at its root, with
+`dwcFiles` / `dsfFiles` listing its contents) — upload it as-is.
 
 `npm run check-ui36` compiles every `src/ui36/*.vue` with the 3.6 checkout's own Vue 2.7
 compiler in about a second (`DWC36_DIR=<checkout>`). It catches malformed SFCs, not
@@ -170,7 +202,8 @@ scripts/ci-local.sh            # python, frontend, build (default)
 scripts/ci-local.sh python     # pytest in .ci-local/venv
 scripts/ci-local.sh frontend   # npm ci + lint + vitest (core, ui37) + jest (ui36)
 scripts/ci-local.sh build36    # DWC 3.6 checkout + stage + build-plugin-pkg + ZIP checks
-scripts/ci-local.sh build      # every build stage
+scripts/ci-local.sh build37    # DWC 3.7 checkout + build-plugin-pkg + ZIP checks
+scripts/ci-local.sh build      # build36 + build37
 scripts/ci-local.sh matrix     # pytest on Python 3.10-3.12 via Docker
 ```
 
@@ -186,9 +219,10 @@ after its layout and manifest are verified (`plugin.json` at the root, a built D
 resource, the daemon, no bytecode, no nested ZIP, and a `dwcVersion` matching the
 checkout it was built against).
 
-Overrides: `DWC36_REF=<ref>` selects the DuetWebControl ref the 3.6 package is built
-against (default `v3.6-dev`), `PYTHON=<interpreter>` selects the interpreter used for
-the venv.
+Overrides: `DWC36_REF=<ref>` / `DWC37_REF=<ref>` select the DuetWebControl refs the two
+packages are built against (defaults `v3.6-dev` and `v3.7-dev`), `BUILD37_DOCKER=0`
+refuses the Node 22 container fallback instead of using it, and `PYTHON=<interpreter>`
+selects the interpreter used for the venv.
 
 ## License
 

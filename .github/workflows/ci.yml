@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       duetwebcontrol_ref:
-        description: 'DuetWebControl branch/tag to build against (default: v3.6-dev)'
+        description: 'DuetWebControl 3.6 branch/tag to build against (default: v3.6-dev)'
+        required: false
+        default: ''
+      duetwebcontrol37_ref:
+        description: 'DuetWebControl 3.7 branch/tag to build against (default: v3.7-dev)'
         required: false
         default: ''
 
@@ -160,4 +164,84 @@ jobs:
         with:
           name: Vigil-dwc36
           path: artifact-dwc36/*
+          retention-days: 30
+
+  build-dwc37:
+    name: Build Plugin ZIP (DWC 3.7)
+    runs-on: ubuntu-latest
+    needs: [python-tests, frontend-tests]
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v6
+        with:
+          path: plugin
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Checkout DuetWebControl
+        uses: actions/checkout@v6
+        with:
+          repository: Duet3D/DuetWebControl
+          ref: ${{ github.event.inputs.duetwebcontrol37_ref || 'v3.7-dev' }}
+          path: DuetWebControl
+
+      # DWC 3.7 builds with Vite 8, which needs Node >= 22 — hence a job of its own
+      # rather than a second step in the 3.6 build.
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install DWC dependencies
+        working-directory: DuetWebControl
+        run: npm install
+
+      # installPluginDependencies() runs `npm install` in the plugin dir for anything
+      # missing from dependencies or devDependencies; a complete install makes that a
+      # no-op, so nothing is ever resolved on the fly next to a Vite build.
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: npm ci
+
+      - name: Compute version from git
+        id: version
+        working-directory: plugin
+        run: |
+          version=$(node scripts/version.js --write | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Unlike the 3.6 builder this one is pointed straight at the repo — it compiles
+      # src/index.js, which imports ui37 only, so ui36 is never bundled.
+      - name: Build plugin
+        working-directory: DuetWebControl
+        run: node scripts/build-plugin-pkg.js ../plugin
+
+      - name: Name the ZIP after its DWC generation
+        id: zip
+        run: |
+          src="plugin/Vigil-${{ steps.version.outputs.version }}.zip"
+          test -f "$src" || { echo "::error::$src was not built"; exit 1; }
+          out="Vigil-${{ steps.version.outputs.version }}-dwc37.zip"
+          mv "$src" "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      # As for 3.6: GitHub wraps artifacts in a ZIP of their own, so upload the
+      # unpacked tree. The builder also writes Vigil-<ver>-srcmap.zip next to the
+      # package — addressed by exact name above so it can never be unpacked instead.
+      - name: Unpack plugin ZIP for artifact upload
+        run: |
+          mkdir -p artifact-dwc37
+          unzip "${{ steps.zip.outputs.path }}" -d artifact-dwc37
+          test -f artifact-dwc37/plugin.json || { echo "::error::plugin.json is not at the ZIP root"; exit 1; }
+          if unzip -Z1 "${{ steps.zip.outputs.path }}" | grep -qE '\.zip$'; then
+            echo "::error::plugin ZIP contains a nested *.zip entry"
+            exit 1
+          fi
+
+      - name: Upload plugin ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: Vigil-dwc37
+          path: artifact-dwc37/*
           retention-days: 30
