@@ -17,7 +17,7 @@
 </template>
 
 <script>
-import Chart from 'chart.js'
+import { Chart, applyConfig, jobsChartConfig } from '../../core/charts'
 
 export default {
     name: 'JobsPieChart',
@@ -29,11 +29,13 @@ export default {
         return { chart: null }
     },
     computed: {
-        hasData() { return this.successful > 0 || this.cancelled > 0 }
+        hasData() { return this.successful > 0 || this.cancelled > 0 },
+        config() {
+            return jobsChartConfig({ successful: this.successful, cancelled: this.cancelled })
+        },
     },
     watch: {
-        successful() { this.renderChart() },
-        cancelled() { this.renderChart() },
+        config() { this.renderChart() },
         hasData(val) {
             if (val) {
                 this.$nextTick(() => this.renderChart())
@@ -53,35 +55,11 @@ export default {
                 this.$nextTick(() => this.renderChart())
                 return
             }
-
             if (this.chart) {
-                this.chart.config.data.datasets[0].data = [this.successful, this.cancelled]
-                this.chart.update()
+                applyConfig(this.chart, this.config)
                 return
             }
-
-            this.chart = new Chart(this.$refs.chart, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Successful', 'Cancelled'],
-                    datasets: [{
-                        data: [this.successful, this.cancelled],
-                        backgroundColor: ['#4CAF50', '#EF5350'],
-                        borderWidth: 0,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    cutoutPercentage: 65,
-                    animation: { duration: 0 },
-                    responsiveAnimationDuration: 0,
-                    legend: {
-                        position: 'bottom',
-                        labels: { boxWidth: 12, padding: 16 }
-                    }
-                }
-            })
+            this.chart = new Chart(this.$refs.chart, this.config)
         }
     }
 }

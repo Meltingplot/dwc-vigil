@@ -36,9 +36,15 @@ const INCLUDE = ['core', 'ui36']
  * `<stage>/src/node_modules/` — which lands as `src/plugins/Vigil/node_modules/` inside
  * the DWC checkout — is found before the checkout's own. That is how the plugin can use
  * a different major of a package DWC 3.6 also ships, without breaking DWC's own uses of
- * it. Empty until the charts move to chart.js 4.
+ * it.
+ *
+ * chart.js is exactly that case: DWC 3.6 ships 2.9 and its own temperature and layer
+ * charts are written against it, while src/core/charts.js is Chart.js 4 (which is what
+ * the 3.7 build bundles, since DWC 3.7 does not expose chart.js to plugins at all).
+ * Vendoring keeps both working off one set of chart configs, with no manual preparation
+ * of the 3.6 checkout.
  */
-const VENDOR = []
+const VENDOR = ['chart.js']
 
 /** Plugin files the builder reads from the plugin directory rather than from src/. */
 const PLUGIN_FILES = ['plugin.json']

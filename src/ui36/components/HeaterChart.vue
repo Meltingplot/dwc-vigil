@@ -17,7 +17,7 @@
 </template>
 
 <script>
-import Chart from 'chart.js'
+import { Chart, applyConfig, heaterChartConfig } from '../../core/charts'
 
 export default {
     name: 'HeaterChart',
@@ -28,7 +28,8 @@ export default {
         return { chart: null }
     },
     computed: {
-        hasData() { return Object.keys(this.heaters).length > 0 }
+        hasData() { return Object.keys(this.heaters).length > 0 },
+        config() { return heaterChartConfig(this.heaters) },
     },
     watch: {
         heaters: {
@@ -49,58 +50,11 @@ export default {
                 this.$nextTick(() => this.renderChart())
                 return
             }
-
-            const labels = Object.keys(this.heaters).map(k => `Heater ${k}`)
-            const onHours = Object.values(this.heaters).map(h => (h.on_seconds || 0) / 3600)
-            const fullLoadHours = Object.values(this.heaters).map(h => (h.full_load_seconds || 0) / 3600)
-
             if (this.chart) {
-                this.chart.config.data.labels = labels
-                this.chart.config.data.datasets[0].data = onHours
-                this.chart.config.data.datasets[1].data = fullLoadHours
-                this.chart.update()
+                applyConfig(this.chart, this.config)
                 return
             }
-
-            this.chart = new Chart(this.$refs.chart, {
-                type: 'horizontalBar',
-                data: {
-                    labels,
-                    datasets: [
-                        {
-                            label: 'On Time (h)',
-                            data: onHours,
-                            backgroundColor: 'rgba(33, 150, 243, 0.75)',
-                            borderRadius: 4,
-                        },
-                        {
-                            label: 'Full Load (h)',
-                            data: fullLoadHours,
-                            backgroundColor: 'rgba(255, 152, 0, 0.75)',
-                            borderRadius: 4,
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: { duration: 0 },
-                    responsiveAnimationDuration: 0,
-                    legend: {
-                        position: 'bottom',
-                        labels: { boxWidth: 12, padding: 16 }
-                    },
-                    scales: {
-                        xAxes: [{
-                            scaleLabel: { display: true, labelString: 'Hours' },
-                            gridLines: { drawBorder: false, color: 'rgba(0,0,0,0.05)' }
-                        }],
-                        yAxes: [{
-                            gridLines: { display: false }
-                        }]
-                    }
-                }
-            })
+            this.chart = new Chart(this.$refs.chart, this.config)
         }
     }
 }

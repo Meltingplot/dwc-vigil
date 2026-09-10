@@ -28,8 +28,9 @@ module.exports = {
     moduleNameMapper: {
         // DWC provides these at runtime; the stubs make them resolvable here
         '^@/(.*)$': '<rootDir>/dwc-stubs/$1',
-        // chart.js comes from the DWC 3.6 checkout in a real build
-        '^chart\\.js$': '<rootDir>/__mocks__/chart.js',
+        // The real chart.js is vendored into the 3.6 build (stage-dwc36.mjs);
+        // jsdom has no canvas for it to draw on.
+        '^chart\\.js(/auto)?$': '<rootDir>/__mocks__/chart.js',
         // Pin the framework to this project, not the Vue 3 root (see above)
         '^vue$': own('vue'),
         '^vue/(.*)$': path.join(own('vue'), '$1'),

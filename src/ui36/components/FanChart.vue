@@ -17,7 +17,7 @@
 </template>
 
 <script>
-import Chart from 'chart.js'
+import { Chart, applyConfig, fanChartConfig } from '../../core/charts'
 
 export default {
     name: 'FanChart',
@@ -28,7 +28,8 @@ export default {
         return { chart: null }
     },
     computed: {
-        hasData() { return Object.keys(this.fans).length > 0 }
+        hasData() { return Object.keys(this.fans).length > 0 },
+        config() { return fanChartConfig(this.fans) },
     },
     watch: {
         fans: {
@@ -49,48 +50,11 @@ export default {
                 this.$nextTick(() => this.renderChart())
                 return
             }
-
-            const labels = Object.keys(this.fans).map(k => `Fan ${k}`)
-            const onHours = Object.values(this.fans).map(f => (f.on_seconds || 0) / 3600)
-
             if (this.chart) {
-                this.chart.config.data.labels = labels
-                this.chart.config.data.datasets[0].data = onHours
-                this.chart.update()
+                applyConfig(this.chart, this.config)
                 return
             }
-
-            this.chart = new Chart(this.$refs.chart, {
-                type: 'horizontalBar',
-                data: {
-                    labels,
-                    datasets: [{
-                        label: 'On Time (h)',
-                        data: onHours,
-                        backgroundColor: 'rgba(0, 150, 136, 0.75)',
-                        borderRadius: 4,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: { duration: 0 },
-                    responsiveAnimationDuration: 0,
-                    legend: {
-                        position: 'bottom',
-                        labels: { boxWidth: 12, padding: 16 }
-                    },
-                    scales: {
-                        xAxes: [{
-                            scaleLabel: { display: true, labelString: 'Hours' },
-                            gridLines: { drawBorder: false, color: 'rgba(0,0,0,0.05)' }
-                        }],
-                        yAxes: [{
-                            gridLines: { display: false }
-                        }]
-                    }
-                }
-            })
+            this.chart = new Chart(this.$refs.chart, this.config)
         }
     }
 }

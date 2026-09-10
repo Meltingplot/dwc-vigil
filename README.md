@@ -77,6 +77,7 @@ src/
     host.js                 # The DWC seam: object model read + start the backend
     backend.js              # SBC backend state (PID lookup, start, auto-recovery)
     api.js                  # Calls to the daemon's DSF HTTP endpoints
+    charts.js               # Chart.js 4 configuration for all four charts
     format.js               # Duration / distance / temperature / byte formatting
   ui36/                     # DWC 3.6 shell (Vue 2.7 + Vuetify 2.7)
     index.js                # Plugin registration, recovers a stopped backend
@@ -127,7 +128,10 @@ Vigil is built by DuetWebControl's own plugin builder, which resolves
 `"dwcVersion": "auto-major"` to the major.minor of whichever DWC checkout does the
 build. The 3.6 build never runs against the repo directly: `scripts/stage-dwc36.mjs`
 first assembles a tree holding only `src/core/`, `src/ui36/`, `dsf/` and `plugin.json`,
-because the 3.6 builder copies (and compiles from) the whole of `<pluginDir>/src`.
+because the 3.6 builder copies (and compiles from) the whole of `<pluginDir>/src`. It
+also vendors the plugin's own Chart.js 4 into that tree: DWC 3.6 ships Chart.js 2.9 and
+its own charts are written against it, so the plugin carries its copy rather than
+upgrading the checkout.
 
 The easy way is the local CI runner, which keeps its DWC checkout in `.ci-local/`:
 

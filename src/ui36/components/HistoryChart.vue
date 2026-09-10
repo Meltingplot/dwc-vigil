@@ -38,11 +38,43 @@
 </template>
 
 <script>
-import Chart from 'chart.js'
+import { Chart, applyConfig, historyChartConfig } from '../../core/charts'
 
 const DICT_METRICS = new Set([
     'heater_on_hours', 'fan_on_hours', 'axis_travel_mm', 'filament_mm',
 ])
+
+const METRICS = [
+    { header: 'Time' },
+    { text: 'Print Hours', value: 'print_hours' },
+    { text: 'Machine Hours', value: 'machine_hours' },
+    { text: 'Pause Hours', value: 'pause_hours' },
+    { text: 'Warmup Hours', value: 'warmup_hours' },
+    { header: 'Jobs' },
+    { text: 'Jobs Total', value: 'jobs_total' },
+    { text: 'Jobs Successful', value: 'jobs_successful' },
+    { text: 'Jobs Cancelled', value: 'jobs_cancelled' },
+    { header: 'Heaters & Fans' },
+    { text: 'Heater On Hours', value: 'heater_on_hours' },
+    { text: 'Fan On Hours', value: 'fan_on_hours' },
+    { header: 'Travel' },
+    { text: 'Axis Travel (mm)', value: 'axis_travel_mm' },
+    { text: 'Filament (mm)', value: 'filament_mm' },
+    { header: 'Vitals' },
+    { text: 'MCU Temp Max', value: 'mcu_temp_max' },
+    { text: 'MCU Temp Min', value: 'mcu_temp_min' },
+    { text: 'Vin Max', value: 'vin_max' },
+    { text: 'Vin Min', value: 'vin_min' },
+    { text: 'V12 Max', value: 'v12_max' },
+    { text: 'V12 Min', value: 'v12_min' },
+    { text: 'SBC CPU Temp Max', value: 'sbc_cpu_temp_max' },
+    { text: 'SBC CPU Load Avg', value: 'sbc_cpu_load_avg' },
+    { text: 'SBC Memory Min (MB)', value: 'sbc_memory_min_mb' },
+    { header: 'System' },
+    { text: 'Firmware Reboots', value: 'firmware_reboots' },
+    { text: 'SBC Reboots', value: 'sbc_reboots' },
+    { text: 'Disk Free (MB)', value: 'volume_free_mb' },
+]
 
 export default {
     name: 'HistoryChart',
@@ -54,37 +86,7 @@ export default {
         return {
             metric: 'print_hours',
             subKey: '',
-            metrics: [
-                { header: 'Time' },
-                { text: 'Print Hours', value: 'print_hours' },
-                { text: 'Machine Hours', value: 'machine_hours' },
-                { text: 'Pause Hours', value: 'pause_hours' },
-                { text: 'Warmup Hours', value: 'warmup_hours' },
-                { header: 'Jobs' },
-                { text: 'Jobs Total', value: 'jobs_total' },
-                { text: 'Jobs Successful', value: 'jobs_successful' },
-                { text: 'Jobs Cancelled', value: 'jobs_cancelled' },
-                { header: 'Heaters & Fans' },
-                { text: 'Heater On Hours', value: 'heater_on_hours' },
-                { text: 'Fan On Hours', value: 'fan_on_hours' },
-                { header: 'Travel' },
-                { text: 'Axis Travel (mm)', value: 'axis_travel_mm' },
-                { text: 'Filament (mm)', value: 'filament_mm' },
-                { header: 'Vitals' },
-                { text: 'MCU Temp Max', value: 'mcu_temp_max' },
-                { text: 'MCU Temp Min', value: 'mcu_temp_min' },
-                { text: 'Vin Max', value: 'vin_max' },
-                { text: 'Vin Min', value: 'vin_min' },
-                { text: 'V12 Max', value: 'v12_max' },
-                { text: 'V12 Min', value: 'v12_min' },
-                { text: 'SBC CPU Temp Max', value: 'sbc_cpu_temp_max' },
-                { text: 'SBC CPU Load Avg', value: 'sbc_cpu_load_avg' },
-                { text: 'SBC Memory Min (MB)', value: 'sbc_memory_min_mb' },
-                { header: 'System' },
-                { text: 'Firmware Reboots', value: 'firmware_reboots' },
-                { text: 'SBC Reboots', value: 'sbc_reboots' },
-                { text: 'Disk Free (MB)', value: 'volume_free_mb' },
-            ],
+            metrics: METRICS,
             chart: null,
         }
     },
@@ -122,6 +124,13 @@ export default {
                 return d[this.metric] || 0
             })
         },
+        config() {
+            return historyChartConfig({
+                labels: this.days.map(d => d.date),
+                values: this.chartValues,
+                label: this.metricLabel,
+            })
+        },
     },
     watch: {
         days() { this.renderChart() },
@@ -142,53 +151,11 @@ export default {
     methods: {
         renderChart() {
             if (!this.$refs.chart || !this.hasData) return
-
-            const labels = this.days.map(d => d.date)
-            const data = this.chartValues
-            const label = this.metricLabel
-
             if (this.chart) {
-                this.chart.config.data.labels = labels
-                this.chart.config.data.datasets[0].data = data
-                this.chart.config.data.datasets[0].label = label
-                this.chart.config.options.scales.yAxes[0].scaleLabel.labelString = label
-                this.chart.update()
+                applyConfig(this.chart, this.config)
                 return
             }
-
-            this.chart = new Chart(this.$refs.chart, {
-                type: 'bar',
-                data: {
-                    labels,
-                    datasets: [{
-                        label,
-                        data,
-                        backgroundColor: 'rgba(25, 118, 210, 0.65)',
-                        borderRadius: 3,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: { duration: 0 },
-                    responsiveAnimationDuration: 0,
-                    legend: { display: false },
-                    scales: {
-                        xAxes: [{
-                            ticks: {
-                                maxRotation: 45,
-                                maxTicksLimit: 15,
-                            },
-                            gridLines: { display: false }
-                        }],
-                        yAxes: [{
-                            ticks: { beginAtZero: true },
-                            scaleLabel: { display: true, labelString: label },
-                            gridLines: { drawBorder: false, color: 'rgba(0,0,0,0.05)' }
-                        }]
-                    }
-                }
-            })
+            this.chart = new Chart(this.$refs.chart, this.config)
         }
     }
 }
