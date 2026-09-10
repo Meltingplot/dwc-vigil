@@ -1,7 +1,9 @@
 # Plan: dual DWC 3.6 / 3.7 builds for Vigil
 
-**Status:** proposal, nothing implemented yet. The local CI runner it relies on
-(`scripts/ci-local.sh`, §3.2) exists since PR #30 and mirrors today's single 3.6 pipeline.
+**Status: implemented.** Phases 0–5 landed on 2026-09-10; what follows is the plan as written,
+kept as the record of why the build looks the way it does. What actually shipped, and where it
+departed from the plan, is in §10 at the end.
+
 **Reference implementation:** [jaysuk/ClosedLoopTuningPlugin](https://github.com/jaysuk/ClosedLoopTuningPlugin)
 (`docs/PLAN-dwc36-backport.md`, `scripts/stage-dwc36.mjs`, `src/core/host.ts`, `src/ui36/`, `src/ui37/`,
 `.github/workflows/release.yml`). Read those files before implementing; this plan describes how to apply
@@ -596,3 +598,75 @@ Open decisions to settle before Phase 1:
 4. Whether `build36` runs on the host Node (if vue-cli 5 builds on Node ≥ 22) or in a `node:18`
    Docker container like the `matrix` stage (§7.7). Decide in Phase 4 when `build37` forces Node 22
    locally.
+
+
+---
+
+## 10. What shipped (2026-09-10)
+
+Implemented across six commits, one per phase. The plan held up; the notes below are the places
+where reality differed or a decision had to be made.
+
+### Open decisions, settled
+
+1. **ZIP naming** — explicit suffixes on both (`Vigil-<ver>-dwc36.zip`, `Vigil-<ver>-dwc37.zip`),
+   as recommended. Neither generation keeps the bare name.
+2. **Test split** — §5 option A. All 60 original frontend tests survive; the suite now stands at
+   133 frontend tests (100 vitest across `tests/core` + `tests/ui37`, 33 Jest in `tests/ui36`) and
+   212 Python tests.
+3. **3.7 release target** — `release.yml` resolves the newest `v3.7.x` tag and falls back to the
+   newest `v3.7.0-<alpha|beta|rc>.N` (today: `v3.7.0-rc.1`), then to `v3.7-dev`. The release itself
+   is *not* marked pre-release — that would hide it from 3.6 users, whose package is built against a
+   stable `v3.6.x` either way — but the notes say which ref each asset was built against and add an
+   explicit warning line while no stable 3.7 exists.
+4. **Node for `build36`** — it stays on the host Node. The problem turned out to be the other way
+   round: a workstation on Node 18 cannot run the 3.7 build at all. So `build37` checks `node -v`
+   and, when the host is older than 22, runs the DWC install and the build in a `node:22-slim`
+   container the way the `matrix` stage runs old Pythons (`BUILD37_DOCKER=0` refuses instead). CI
+   uses two `setup-node` steps, per §7.7.
+
+### Departures from the plan
+
+- **`stage-dwc36.mjs` also stages `dsf/`.** Upstream's plugin has no SBC half, so their script only
+  copies `src/`. Both builders read `dsf/`, `dwc/` and `sd/` from the *plugin directory* rather than
+  from `src/`, so without this the 3.6 package would have shipped with no daemon and an empty
+  `dsfFiles`. It filters `__pycache__` on the way, rather than trusting the caller to have stripped it.
+- **`core/format.js` landed in Phase 0**, not later — it is pure extraction and it shrinks Phase 4.
+- **The host adapter has an `undefined` case.** `pluginEntry()` returns `undefined` when there is no
+  machine object model at all, distinct from `null` for "no entry yet". Without it, `ensureBackendRunning`
+  polls for 30 s in every environment that has no DWC — including the Jest run that imports
+  `ui36/index.js`. §3.1's two members are otherwise unchanged.
+- **`VigilDashboard` takes the host as a prop** (defaulting to `createHost()`). Both adapters read a
+  module singleton, which a mounted component cannot substitute, and the plan wants the existing
+  dashboard tests kept.
+- **The DWC stubs went to `tests/ui36/dwc-stubs/`**, not `tests/ui36/__mocks__/` — Jest resolves a
+  manual mock relative to the *resolved* module path, so the stubs and their `__mocks__` directory
+  have to sit together.
+- **§7.6 found a real breakage.** dsf-python 3.7 renamed `BaseConnection.connect` to `_connect`, so
+  the patch working around the truncating `recv(50)` was landing on a method nothing calls: on DSF 3.7
+  the daemon would have failed to connect with the exact `JSONDecodeError: Unterminated string` that
+  patch exists to prevent, and the `try/except ImportError` would have hidden nothing because there
+  was no error. It now patches whichever names the class has, and `tests/test_dsf_patches.py`
+  exercises every patch against both library shapes. Of the rest: `BoardState` (still missing
+  `timedOut`) and `Axis.letter` are still needed on 3.7; `PluginManifest.data` and
+  `NetworkInterfaceType.ethernet` are fixed upstream and are now marked 3.6-only.
+- **`vitest.config.mjs`, not `.js`** — the root `package.json` is CommonJS, and the test kit's config
+  helper is ESM.
+
+### Verified
+
+- `scripts/ci-local.sh all` green end to end, with `DWC36_REF=v3.6.3 DWC37_REF=v3.7.0-rc.1` (the same
+  pair `release.yml` resolves today): both ZIPs built, `collect_zip` passing for each, `git status
+  --short` empty afterwards and `.ci-local/dist/` holding exactly the two packages.
+- The 3.6 bundle reports Chart.js v4.5.0 while DuetWebControl's own app bundle still reports v2.9.4 —
+  the vendored copy does not leak into DWC's charts.
+- The 3.7 bundle externalises `DWC.registerRoute` / `DWC.unregisterRoute` / `DWC.Events` / `DWC.Vue`
+  and bundles its own Chart.js; DWC 3.7's own type check passes over the repo, `src/ui36/` included.
+
+### Not verified — still owed
+
+The whole of §8's second half needs real hardware and has not been done: installing each package on
+its own generation (and confirming the other is refused), the dashboard, charts, dialogs, exports and
+counter reset on both, the upgrade-over-existing banner path, and — on 3.7 — that stopping the plugin
+removes the menu entry. §7.4 stands: for `ui36` in particular, a wrong Vuetify 2 prop is valid markup
+that only a running DWC 3.6 will catch.

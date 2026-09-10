@@ -19,8 +19,8 @@ A [DuetWebControl](https://github.com/Duet3D/DuetWebControl) plugin that tracks 
 ## Requirements
 
 - Duet 3D printer with SBC (Raspberry Pi or similar)
-- DSF v3.6+
-- DuetWebControl v3.6+
+- DSF v3.6 or v3.7
+- DuetWebControl v3.6 or v3.7 — one package per generation, see [Installation](#installation)
 - Python 3.10+
 
 ## Installation
