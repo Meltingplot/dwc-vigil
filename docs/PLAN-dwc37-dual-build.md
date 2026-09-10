@@ -1,6 +1,7 @@
 # Plan: dual DWC 3.6 / 3.7 builds for Vigil
 
-**Status:** proposal, nothing implemented yet.
+**Status:** proposal, nothing implemented yet. The local CI runner it relies on
+(`scripts/ci-local.sh`, §3.2) exists since PR #30 and mirrors today's single 3.6 pipeline.
 **Reference implementation:** [jaysuk/ClosedLoopTuningPlugin](https://github.com/jaysuk/ClosedLoopTuningPlugin)
 (`docs/PLAN-dwc36-backport.md`, `scripts/stage-dwc36.mjs`, `src/core/host.ts`, `src/ui36/`, `src/ui37/`,
 `.github/workflows/release.yml`). Read those files before implementing; this plan describes how to apply
@@ -90,7 +91,8 @@ scripts/
 | brings chart.js 4 | uses DWC 3.6's chart.js 2.9 via bare `import Chart from 'chart.js'` | Vigil must own a chart.js dependency for 3.7. Recommended: migrate the four charts to the chart.js 4 API once, in shared code, and vendor chart.js 4 into the 3.6 build exactly like upstream (§4) |
 | vitest / Vue 3 tests only | Jest + `@vue/vue2-jest` + Vuex store mocks, 60 frontend tests | Vue 2 and Vue 3 cannot both be `vue` in one `package.json`. Needs a decision (§5) |
 | i18n via `registerPluginMessages` / `mergeLocaleMessage` | literal captions, `translated: true` | Simpler: 3.7's `registerRoute` supports `translated` the same way. No i18n work required |
-| `build.bat` / `build36.bat` | `scripts/build-zip.js` (raw-source ZIP, not installable) + `version.js` | Replace `build-zip.js` with real builds via the two DWC checkouts; keep `version.js --write` and run it before both builds |
+| `build.bat` / `build36.bat` | `scripts/ci-local.sh` (local mirror of `ci.yml`: stages `python`, `matrix`, `frontend`, `build`; one DWC 3.6 checkout under `.ci-local/`) + `version.js`; `scripts/build-zip.js` (raw-source ZIP, not installable) | Drop `build-zip.js`. Grow `ci-local.sh` into the two-build runner (`build36` / `build37` stages, §3.2) instead of adding `build36.sh` / `build37.sh`; keep `version.js --write` and run it once before both builds |
+| 3.6 built with `npm run build-plugin-pkg` (populates `dwcFiles` / `dsfFiles`) | `ci.yml` and `ci-local.sh` call `npm run build-plugin` (manifest without those arrays; `collect_zip` checks the ZIP layout instead) | Switch 3.6 to `build-plugin-pkg` as part of Phase 1 so both generations ship the same manifest shape (3.7's `build-plugin-pkg.js` always populates the arrays); extend the local manifest check accordingly (§3.2) |
 | Release names: `<id>-<ver>.zip` = 3.7, `-dwc36.zip` = 3.6 | existing users download `Vigil-<ver>.zip` for 3.6 | Recommend explicit suffixes for **both** (`Vigil-<ver>-dwc36.zip`, `Vigil-<ver>-dwc37.zip`) so a 3.6 user's habit does not hand them the wrong file. DWC rejects the wrong one anyway, but only after the upload |
 
 ---
@@ -122,7 +124,7 @@ scripts/
   version.js                unchanged
   stage-dwc36.mjs           adapted from upstream: INCLUDE = ["core", "ui36"], VENDOR = ["chart.js"]
   check-ui36.mjs            adapted verbatim (DWC36_DIR)
-  build36.sh / build37.sh   local convenience wrappers (upstream has .bat; we want POSIX)
+  ci-local.sh               local CI runner (exists); gains build36 / build37 stages (§3.2)
 tests/
   core/*.test.js            vitest, no Vue
   ui37/*.test.js            vitest + dwc-plugin-test-kit (mountInDwc, setModel)
@@ -178,6 +180,58 @@ export function createHost() {
 calls `host.pluginEntry()`. Vuex and Pinia both track the read, so `backendRunning` stays reactive
 and the existing `watch: { backendRunning }` keeps working. `isBackendRunning(pluginEntry)` in
 `core/backend.js` becomes a pure function of the entry, which also simplifies its tests.
+
+### 3.2 Local CI runner: `scripts/ci-local.sh` and `.ci-local/`
+
+`scripts/ci-local.sh` (PR #30) reproduces `.github/workflows/ci.yml` on a workstation. Everything
+it needs lives in the gitignored `.ci-local/` directory; nothing is installed system-wide. What it
+does today, and what the dual build needs from it:
+
+| Stage | Today (3.6 only) | After the dual build |
+|---|---|---|
+| `python` | pytest + coverage in `.ci-local/venv` | unchanged |
+| `matrix` | pytest on Python 3.10–3.12 via Docker (`python:<v>-slim`, repo copied read-only) | unchanged |
+| `frontend` | `npm ci`, `npm run lint`, `npx jest tests/frontend/*.test.js`, `npx jest tests/frontend/integration/` | `npm ci`, `npm run lint`, `npm test` (vitest: `tests/core`, `tests/ui37`), then `npm run test:ui36` (`npm ci` + Jest inside `tests/ui36/`, §5) |
+| `build` | fetch/update DWC `$DWC_REF` into `.ci-local/DuetWebControl`, `npm install` there, `version.js --write` (snapshot + restore), `npm run build-plugin $ROOT`, `collect_zip` | becomes an alias for `build36` + `build37`; `all` runs both |
+| `build36` (new) | – | `npm run check-ui36` against the 3.6 checkout, `node scripts/stage-dwc36.mjs .ci-local/stage-36`, `npm run build-plugin-pkg -- $WORK/stage-36` in `.ci-local/DuetWebControl-36`, copy `dist/Vigil-<ver>.zip` to `.ci-local/dist/Vigil-<ver>-dwc36.zip`, `collect_zip` with expected major.minor `3.6` |
+| `build37` (new) | – | refuse to run on Node < 22 (§7.7), fetch/update `.ci-local/DuetWebControl-37` at `$DWC37_REF`, `npm install` there, `npm ci` at the repo root (so the builder's own install is a no-op, §7.1), `node scripts/build-plugin-pkg.js $ROOT` from the 3.7 checkout, move `$ROOT/Vigil-<ver>.zip` to `.ci-local/dist/Vigil-<ver>-dwc37.zip`, delete `$ROOT/Vigil-<ver>-srcmap.zip`, `$ROOT/dist/`, `$ROOT/pkg/` (§7.11), `collect_zip` with expected major.minor `3.7` |
+
+Env overrides: `DWC_REF` becomes `DWC36_REF` (default `v3.6-dev`) and `DWC37_REF` (default
+`v3.7-dev`); `PYTHON` stays. The stage names `python | matrix | frontend | build36 | build37 | build | all`
+are the CLI surface documented in the README's "Running CI locally" section; update it in the same
+commit.
+
+```
+.ci-local/
+  venv/                  pytest + pytest-cov
+  DuetWebControl-36/     persistent v3.6-dev checkout (git fetch --depth 1 + checkout --force per run)
+  DuetWebControl-37/     persistent v3.7-dev checkout
+  stage-36/              output of stage-dwc36.mjs, wiped before every build36
+  dist/                  Vigil-<ver>-dwc36.zip, Vigil-<ver>-dwc37.zip (only these two files)
+  version-backup/        plugin.json / package.json snapshots restored by the EXIT trap
+```
+
+Rules the runner enforces that the dual build must keep:
+
+- **Version stamping is transactional.** `stamp_version` snapshots `plugin.json` / `package.json`,
+  runs `version.js --write`, and the EXIT trap restores them even when a build dies. Stamp once,
+  before `build36`, and restore after `build37`, so both ZIPs carry the same version; the working
+  tree must be clean after any exit path (`git status --short` empty, checked in §8).
+- **`dsf/__pycache__` is stripped before every build**, and `collect_zip` fails if bytecode is in
+  the ZIP. Both builders copy `dsf/` verbatim (§0), and a local `pytest` run always leaves bytecode
+  behind, so this stays in front of *both* build stages (the 3.6 stage script copies `dsf/` too,
+  so strip before staging).
+- **`collect_zip <zip> <expected major.minor>`** keeps today's checks (`plugin.json` at the ZIP root,
+  a built `dwc/js/Vigil.*.js`, `dsf/vigil-daemon.py`, no `__pycache__`, `id`, stamped `version`,
+  `sbcExecutable`, `dwcVersion` and `sbcDsfVersion` equal to the checkout's major.minor) and gains:
+  no `*.zip` entry inside the ZIP (§7.10), and, once both builds go through `build-plugin-pkg`,
+  `dwcFiles` and `dsfFiles` present, non-empty, and listing `vigil-daemon.py`. The expected
+  major.minor is read from the respective checkout's `package.json`, as today, so `DWC36_REF` /
+  `DWC37_REF` pointing at a tag keeps the check meaningful.
+- **`ci.yml` and `ci-local.sh` change together.** Every CI step added or changed in Phases 1–5
+  lands in the runner in the same commit, and the runner is what verifies a phase before it is
+  pushed. The `python` and `matrix` stages do not change; the `frontend` stage changes in Phase 2,
+  the build stages in Phases 1 and 4.
 
 ---
 
@@ -262,6 +316,9 @@ Root `package.json` after the split:
 }
 ```
 
+`ci-local.sh`'s `frontend` stage calls exactly these scripts (`lint`, `test`, `test:ui36`) rather
+than `npx jest …` directly, so the runner, `ci.yml` and a developer's shell run the same commands.
+
 ESLint: `plugin:vue/recommended` (Vue 3 rules) for `src/ui37/` and `src/core/`, an override with
 `plugin:vue/vue2-recommended` for `src/ui36/**`.
 
@@ -290,13 +347,22 @@ Each phase is independently committable and leaves the 3.6 ZIP installable.
    `check-ui36` in that job (it already has the 3.6 checkout with `node_modules`).
 4. Update `tests/frontend/integration/plugin-structure.test.js` (entry path, stubs no longer in `src/`)
    and drop `scripts/build-zip.js` + the `build` npm script.
-5. **Verify:** ZIP from the staged build is functionally identical to Phase 0's.
+5. `ci-local.sh`: rename the `build` stage to `build36` (keep `build` as an alias), `DWC_REF` →
+   `DWC36_REF`, checkout dir → `.ci-local/DuetWebControl-36`, run `check-ui36` + stage script +
+   `build-plugin-pkg` on the staged tree, copy the result to `.ci-local/dist/Vigil-<ver>-dwc36.zip`,
+   extend `collect_zip` (`dwcFiles` / `dsfFiles`, no nested `*.zip`). Update the README section.
+6. **Verify:** `scripts/ci-local.sh all` green; ZIP from the staged build is functionally identical
+   to Phase 0's (same entry list in `unzip -l` apart from the manifest arrays).
 
 ### Phase 2 — split the test toolchains (§5 option A)
 1. `tests/ui36/` nested project with the Jest suite; root moves to vitest + test-kit.
 2. Port `backend.test.js` (and any other Vue-free tests) to `tests/core/` under vitest.
 3. CI frontend job: root `npm ci`, `npm run lint`, `npm test`, then `npm run test:ui36`.
-4. **Verify:** same test count passes as before, split across the two runners.
+4. `ci-local.sh` `frontend` stage: same four commands (replaces the two `npx jest` calls). The nested
+   `npm ci` in `tests/ui36/` writes `tests/ui36/node_modules` and `tests/ui36/package-lock.json`;
+   ignore the former, commit the latter.
+5. **Verify:** `scripts/ci-local.sh frontend` reports the same total test count as before, split
+   across the two runners.
 
 ### Phase 3 — chart.js 4 in shared code, vendored into 3.6 (§4)
 1. `src/core/charts.js` with config builders + tests (pure objects, no canvas).
@@ -320,6 +386,10 @@ Suggested order, building after each step (upstream's advice: never write everyt
    plugin so the builder's own install is a no-op, `node scripts/build-plugin-pkg.js ../plugin`,
    rename to `Vigil-<ver>-dwc37.zip`, unpack it into its own artifact directory and upload that as
    artifact `Vigil-dwc37`; the `-srcmap.zip` must not land in that directory, see §7.3 and §7.10).
+   `ci-local.sh`: matching `build37` stage (§3.2) with the Node ≥ 22 guard, `DWC37_REF`,
+   `.ci-local/DuetWebControl-37`, the move-out of `Vigil-<ver>.zip` and the cleanup of `dist/`,
+   `pkg/` and `-srcmap.zip` from the repo root (§7.11); `build` and `all` now run both builds.
+   Add `/pkg/` and `/Vigil-*.zip` to `.gitignore` (`dist/` is already ignored).
 5. **Verify on a real DWC 3.7 + DSF 3.7:** install, daemon starts, dashboard polls, every tab,
    dialog, export and reset works, upgrade-over-existing triggers the banner and Start Backend works,
    stopping the plugin in Settings → Plugins removes the menu entry (unregisterRoute).
@@ -350,8 +420,13 @@ Vuetify 2 → 4 translation table for the components Vigil actually uses (from a
 2. Two build jobs (or one job with two Node setups; upstream does one job with two checkouts), both
    ZIPs attached to the same release, notes stating which DWC each was built against.
 3. README: an install matrix (DWC 3.6 → `-dwc36.zip`, DWC 3.7 → `-dwc37.zip`), and a note that
-   DWC rejects the other one with a version mismatch.
+   DWC rejects the other one with a version mismatch. The "Building" section points at
+   `scripts/ci-local.sh build36` / `build37` instead of a hand-run `npm run build-plugin`, and
+   "Running CI locally" lists the new stages and `DWC36_REF` / `DWC37_REF`.
 4. Bump `plugin.json` to the next minor.
+5. Dry-run the release build locally first: `DWC36_REF=v3.6.<latest> DWC37_REF=<3.7 tag or rc>
+   scripts/ci-local.sh build` must produce both ZIPs with `dwcVersion` matching the tags, which is
+   the same pair of refs `release.yml` resolves in step 1.
 
 ---
 
@@ -370,11 +445,21 @@ entry imports, so a stray `ui37/` would probably not break the 3.6 build — but
 stage script exists: it also gives the 3.6 build its own `src/index.js` and the vendored chart.js.
 Always build 3.6 from the staged tree, never from the repo. Clean `DuetWebControl/src/plugins/Vigil`
 and `dist/Vigil-*.zip` before each run (an interrupted run leaves a stale copy that gets compiled again).
+This matters most locally: `.ci-local/DuetWebControl-36` is a *persistent* checkout that
+`ci-local.sh` only fetches and force-checks-out (untracked files survive), and the 3.6 builder removes
+`src/plugins/Vigil` only on success, not in its error path. `collect_zip` picks the newest
+`dist/Vigil-*.zip` by mtime today; with two ZIP names in play, wipe `dist/Vigil-*.zip` before the build
+and match the exact expected name afterwards instead.
 
 ### 7.3 `-srcmap.zip` sorts before `.zip`
 DWC 3.7's builder emits `Vigil-<ver>-srcmap.zip` next to `Vigil-<ver>.zip`. `-` sorts before `.`, so a
 naive `ls Vigil-*.zip | head -1` picks the sourcemap archive. Filter it out explicitly (upstream
-shipped this bug once).
+shipped this bug once). `ci-local.sh`'s `collect_zip` uses `ls -1t … | head -1` (newest by mtime),
+which is no safer: the sourcemap archive is written *after* the plugin ZIP and would win. Every
+CI/local build hits this, not only tagged releases: `version.js` stamps `X.Y.Z-dev.N`, which the
+builder's prerelease regex (`-(alpha|beta|rc)`) does not match, so dev builds get hidden sourcemaps
+and always produce the `-srcmap.zip`. Address by exact name (`Vigil-$VERSION.zip`, with `$VERSION`
+from `node scripts/version.js`) rather than by glob.
 
 ### 7.10 CI artifacts must stay installable: no ZIP inside a ZIP
 GitHub always wraps an uploaded artifact in a ZIP of its own on download. Uploading `Vigil-<ver>.zip`
@@ -396,6 +481,37 @@ directory and uploads the *contents*, so the artifact ZIP GitHub serves has `plu
   `actions/upload-artifact` path needs the unpack step.
 - Verify in CI, not by eye: after unpacking, assert `test -f <dir>/plugin.json` and that
   `unzip -l` of the produced plugin ZIP lists no `*.zip` entry, then fail the job otherwise.
+  `ci-local.sh`'s `collect_zip` already asserts `plugin.json` at the ZIP root and is the place for
+  the "no nested `*.zip`" check too, so a local `build37` catches a sourcemap archive that slipped
+  into `pkg/` before CI does.
+
+### 7.11 DWC 3.7's builder writes into the plugin directory, i.e. the repo root
+`build-plugin-pkg.js` (3.7) puts its outputs *inside the plugin dir*: `dist/` (Vite output),
+`pkg/` (the assembled tree), `Vigil-<ver>.zip` and `Vigil-<ver>-srcmap.zip`; `installPluginDependencies`
+may also `npm install` into the plugin's `node_modules` and undo that afterwards. In CI the plugin
+checkout is throwaway; locally it is the working tree. So: add `/pkg/` and `/Vigil-*.zip` to
+`.gitignore` (`dist/` is already there), have `build37` move the plugin ZIP to `.ci-local/dist/`
+and delete `dist/`, `pkg/` and the `-srcmap.zip` afterwards (also on failure, via the same EXIT trap
+that restores the version files), and make `stage-dwc36.mjs` copy only `core/` and `ui36/` so a
+leftover `dist/` or `pkg/` from a 3.7 run never reaches the 3.6 stage. The 3.6 builder has the
+opposite shape (outputs land in the DWC checkout's `dist/`), which is why the two stages must not
+share a `collect_zip` path assumption.
+
+### 7.12 `.ci-local/` sits inside the repo, so Node's upward module resolution can reach the root `node_modules`
+Both DWC checkouts live under `$ROOT/.ci-local/`. Webpack (3.6) and Vite (3.7) resolve bare imports
+by walking up from the importing file, and the 3.7 builder's `isPackageInstalled` does the same walk
+explicitly. From `.ci-local/DuetWebControl-36/src/plugins/Vigil/…` that walk passes DWC's own
+`node_modules` first (so `vue`, `vuetify`, `vuex` are DWC's), but anything DWC 3.6 does *not* ship
+and the repo root does (after §5: `chart.js` 4, vitest, `@vue/test-utils@2`, …) resolves silently
+from `$ROOT/node_modules` in a local build and fails in CI, where `plugin/` and `DuetWebControl/`
+are siblings. Vendoring (§4) is the intended path for `chart.js`; for everything else the rule is
+that a 3.6 build which only passes locally is broken. Cheap guard in `build36`: grep the staged
+build's webpack stats / the emitted chunk for `../../..` paths escaping the DWC checkout, or simply
+keep `npm test` + `build36` green in CI before trusting a local green. The nested Jest project in
+`tests/ui36/` has the mirror-image problem (SFCs under `src/ui36/` resolve `vue` and `vuex` upward
+to the Vue 3 root): its `jest.config.js` needs `moduleDirectories: ['<rootDir>/node_modules',
+'node_modules']` plus explicit `moduleNameMapper` entries for `vue`, `vuex` and `vuetify`, which
+belongs to Phase 2 and is verified by `ci-local.sh frontend`.
 
 ### 7.4 `ui36/` has no automated safety net beyond compiling
 Vuetify 4 props surviving in a Vuetify 2 template (or vice versa) are valid markup. `check-ui36.mjs`
@@ -419,6 +535,12 @@ mocks pointed at whatever changed. This is the one place the dual build touches 
 ### 7.7 Node versions in CI
 DWC 3.6 (vue-cli 5) builds on Node 18; DWC 3.7 (Vite 8) needs Node ≥ 22. Use separate jobs with their
 own `setup-node`, or two `setup-node` steps in one job. Do not try to build both on one Node.
+Locally, `ci-local.sh` uses whatever `node` is on `PATH` and prints its version per stage. `build37`
+must check `node -v` (major ≥ 22) up front and die with a hint, otherwise Vite fails late with an
+opaque error. Whether DWC 3.6 still builds on the same Node ≥ 22 has to be verified once (vue-cli 5 /
+webpack 5 generally do); if it does, one host Node covers both stages, if not, run `build36` in
+`node:18` via Docker the way the `matrix` stage runs pytest, rather than juggling `nvm` inside the
+script.
 
 ### 7.8 `translated: true` means opposite things in 3.6 App.vue only when a key is used
 Vigil passes a literal caption with `translated: true`, which is correct on both generations. If i18n
@@ -436,7 +558,12 @@ On 3.7, unregister the route and clear the poll timer when Vigil is stopped from
 - [ ] `npm test` (vitest: core + ui37) and `npm run test:ui36` (Jest) both green, total test count ≥ today's
 - [ ] `pytest tests/` green, plus the dsf-python 3.7 patch review from §7.6
 - [ ] `DWC36_DIR=… npm run check-ui36` compiles every `ui36` SFC
-- [ ] `build36.sh` produces `Vigil-<ver>-dwc36.zip`; `build37.sh` produces `Vigil-<ver>-dwc37.zip`
+- [ ] `scripts/ci-local.sh all` green end to end: `build36` produces `.ci-local/dist/Vigil-<ver>-dwc36.zip`,
+      `build37` produces `.ci-local/dist/Vigil-<ver>-dwc37.zip`, `collect_zip` passes for both (right
+      `dwcVersion`, `dwcFiles` / `dsfFiles`, no `__pycache__`, no nested `*.zip`)
+- [ ] After `ci-local.sh all`, `git status --short` is empty: version files restored, no `dist/`,
+      `pkg/`, `Vigil-*.zip` or `tests/ui36/node_modules` showing up as untracked (§7.11)
+- [ ] The same commit is green in GitHub Actions (rules out a local-only resolution, §7.12)
 - [ ] Each ZIP installs on its own generation and is **refused** by the other (dwcVersion mismatch)
 - [ ] On both generations: dashboard loads, all tiers/tabs, four charts, history drill-down, service log,
       counter reset, service event, JSON + CSV export
@@ -466,3 +593,6 @@ Open decisions to settle before Phase 1:
 2. Test split: §5 option A (recommended) vs dropping the Vue 2 component tests.
 3. Whether the 3.7 release should target `v3.7-dev` / release candidates until a stable 3.7 tag exists,
    and whether to label such builds as pre-release on GitHub.
+4. Whether `build36` runs on the host Node (if vue-cli 5 builds on Node ≥ 22) or in a `node:18`
+   Docker container like the `matrix` stage (§7.7). Decide in Phase 4 when `build37` forces Node 22
+   locally.
