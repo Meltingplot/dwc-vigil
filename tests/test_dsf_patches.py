@@ -97,11 +97,78 @@ def _install_dsf(monkeypatch, connect_name):
         def __init__(self):
             self._data = {}
 
+    class ModelDictionary(dict):
+        """3.7's dictionary: update_from_json(None) already means clear."""
+
+        def __init__(self, null_deletes_keys=False):
+            super().__init__()
+
+        def update_from_json(self, data):
+            if data is None:
+                self.clear()
+            else:
+                self.update(data)
+            return self
+
+    class ModelCollection(list):
+        def update_from_json(self, data):
+            if not isinstance(data, list):
+                raise Exception(f"Invalid JSON element type for model collection {type(data)}.")
+            self[:] = data
+            return self
+
+    if connect_name == "_connect":
+        # 3.7 declares custom_info with model_prop, whose setter defers to the module-level
+        # _set_model_prop -- which has no branch for None and raises TypeError.
+        def _set_model_prop(instance, name, runtime_type, current_value, value):
+            if isinstance(value, dict):
+                current_value.update_from_json(value)
+                return
+            raise TypeError(f"{instance.__class__.__name__}.{name} must be of type {runtime_type}"
+                            f" or a compatible JSON element to update from. Got {type(value).__name__}: {value}")
+
+        utils = module("dsf.object_model.utils", _set_model_prop=_set_model_prop)
+
+        def model_prop(name, model_type):
+            storage = "_" + name
+
+            def getter(self):
+                value = getattr(self, storage, None)
+                if value is None:
+                    value = model_type(False)
+                    setattr(self, storage, value)
+                return value
+
+            def setter(self, value):
+                if isinstance(value, model_type):
+                    setattr(self, storage, value)
+                    return
+                # Looked up on the module at call time, as the library does
+                utils._set_model_prop(self, storage, model_type, getter(self), value)
+
+            return property(getter, setter)
+
+        class GCodeFileInfo:
+            custom_info = model_prop("custom_info", ModelDictionary)
+    else:
+        class GCodeFileInfo:
+            """3.6: a getter-only property, which the deserializer skips."""
+
+            def __init__(self):
+                self._custom_info = {}
+
+            @property
+            def custom_info(self):
+                return self._custom_info
+
     module("dsf")
     module("dsf.object_model", HttpEndpointType=Enum("HttpEndpointType", {"GET": "GET", "POST": "POST"}))
     module("dsf.object_model.plugins")
     module("dsf.object_model.plugins.plugin_manifest", PluginManifest=PluginManifest)
-    module("dsf.object_model.model_dictionary", ModelDictionary=lambda *a, **k: {})
+    module("dsf.object_model.model_dictionary", ModelDictionary=ModelDictionary)
+    module("dsf.object_model.model_collection", ModelCollection=ModelCollection)
+    module("dsf.object_model.job")
+    module("dsf.object_model.job.gcode_fileinfo", GCodeFileInfo=GCodeFileInfo)
     module("dsf.object_model.boards")
     module("dsf.object_model.boards.boards", Board=Board, BoardState=_BoardState)
     module("dsf.object_model.network")
@@ -125,13 +192,15 @@ def _install_dsf(monkeypatch, connect_name):
     spec = importlib.util.spec_from_file_location("vigil_daemon_patched", DAEMON)
     daemon = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(daemon)
-    return daemon, BaseConnection, Board, NetworkInterface, Axis
+    return daemon, BaseConnection, Board, NetworkInterface, Axis, GCodeFileInfo
 
 
 @pytest.fixture(params=["connect", "_connect"], ids=["dsf3.6", "dsf3.7"])
 def dsf(request, monkeypatch):
     """Both library shapes: 3.6 names the method connect(), 3.7 _connect()."""
-    daemon, base_connection, board, network_interface, axis = _install_dsf(monkeypatch, request.param)
+    daemon, base_connection, board, network_interface, axis, gcode_file_info = _install_dsf(
+        monkeypatch, request.param
+    )
     return types.SimpleNamespace(
         daemon=daemon,
         connect_name=request.param,
@@ -139,6 +208,7 @@ def dsf(request, monkeypatch):
         Board=board,
         NetworkInterface=network_interface,
         Axis=axis,
+        GCodeFileInfo=gcode_file_info,
     )
 
 
@@ -219,3 +289,30 @@ def test_uninitialised_axis_letter_falls_back(dsf):
 
     axis.letter = "X"
     assert axis.letter == "X"
+
+
+def test_null_custom_info_clears_the_dictionary_instead_of_aborting_the_patch(dsf):
+    if dsf.connect_name == "connect":
+        # 3.6 never had the problem: custom_info is getter-only and the deserializer
+        # skips it, so the patch must leave it alone.
+        assert dsf.GCodeFileInfo.custom_info.fset is None
+        return
+
+    info = dsf.GCodeFileInfo()
+    info.custom_info = {"slicer": "PrusaSlicer"}
+    assert dict(info.custom_info) == {"slicer": "PrusaSlicer"}
+
+    # DSF sends "customInfo": null in PATCH updates. Unpatched, 3.7 raised
+    # "GCodeFileInfo._custom_info must be of type ModelDictionary ... Got NoneType"
+    # here, and the daemon dropped the whole object-model patch.
+    info.custom_info = None
+    assert dict(info.custom_info) == {}
+
+
+def test_a_genuinely_wrong_custom_info_value_still_raises(dsf):
+    if dsf.connect_name == "connect":
+        pytest.skip("3.6 has no custom_info setter")
+
+    info = dsf.GCodeFileInfo()
+    with pytest.raises(TypeError):
+        info.custom_info = 42

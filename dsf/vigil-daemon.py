@@ -61,6 +61,37 @@ try:
 except Exception:
     pass
 
+# dsf-python 3.7 only: GCodeFileInfo.custom_info (like ObjectModel.globals and
+# PluginManifest.data) is a non-nullable `model_prop` over a ModelDictionary, and the
+# setter's helper `_set_model_prop` has no branch for None. DSF does send
+# `"customInfo": null` in PATCH updates, which raises
+# "GCodeFileInfo._custom_info must be of type ModelDictionary ... Got NoneType" and
+# aborts update_from_json() for the whole patch. ModelDictionary.update_from_json(None)
+# already means "clear", so route a None aimed at a dictionary (or collection) there.
+# 3.6 hand-writes custom_info as a getter-only property the deserializer skips, and has
+# no `_set_model_prop` to patch.
+try:
+    import dsf.object_model.utils as _om_utils
+    from dsf.object_model.model_collection import ModelCollection as _ModelCollection
+    from dsf.object_model.model_dictionary import ModelDictionary as _ModelDictionary
+
+    _original_set_model_prop = _om_utils._set_model_prop
+
+    def _patched_set_model_prop(instance, name, runtime_type, current_value, value):
+        if value is None:
+            if isinstance(current_value, _ModelDictionary):
+                current_value.update_from_json(None)
+                return
+            if isinstance(current_value, _ModelCollection):
+                current_value.update_from_json([])
+                return
+        return _original_set_model_prop(instance, name, runtime_type, current_value, value)
+
+    # model_prop's setter looks `_set_model_prop` up in the utils module at call time
+    _om_utils._set_model_prop = _patched_set_model_prop
+except Exception:
+    pass
+
 # Both generations: the BoardState enum is missing values DSF reports (e.g. timedOut).
 # Assigning one raises ValueError from the property setter, which takes down the whole
 # get_object_model() call rather than just that board.
