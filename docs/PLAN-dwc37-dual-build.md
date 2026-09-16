@@ -650,6 +650,12 @@ where reality differed or a decision had to be made.
   exercises every patch against both library shapes. Of the rest: `BoardState` (still missing
   `timedOut`) and `Axis.letter` are still needed on 3.7; `PluginManifest.data` and
   `NetworkInterfaceType.ethernet` are fixed upstream and are now marked 3.6-only.
+- **[both] Unknown enum values no longer need a patch each.** A DSF 3.7 printer reported
+  `ValueError: 'motorStallEncoder' is not a valid EndstopType` from the first `get_object_model()`
+  (2026-09-16; DSF 3.7-dev added `MotorStallEncoder`, neither dsf-python branch has it). Both
+  generations' setters call `EnumType(value)`, so the daemon now installs a `_missing_` hook on every
+  enum under `dsf.object_model` that mints a pseudo-member carrying the raw value and logs it once.
+  Verified against the real v3.6-dev and v3.7-dev libraries; `test_dsf_patches.py` covers both shapes.
 - **`vitest.config.mjs`, not `.js`** — the root `package.json` is CommonJS, and the test kit's config
   helper is ESM.
 
