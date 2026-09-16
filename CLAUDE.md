@@ -101,7 +101,7 @@ Nothing in `core/` may import a store or anything Vue-version-specific.
   "sbcRequired": true,
   "sbcDsfVersion": "auto-major",
   "sbcExecutable": "vigil-daemon.py",
-  "sbcOutputRedirected": true,     // stdout → console "success", stderr → "error": log to stderr
+  "sbcOutputRedirected": true,     // stdout → console "success", stderr → "error" — nothing else: errors to stderr, warnings via write_message (§4.2)
   "sbcPythonDependencies": ["dsf-python"],
   "data": { "status": "idle", "machineHours": 0 }   // pre-declare EVERY key written with set_plugin_data
   // "sbcData": {}                 // [3.6 only verified, 3.7 unchecked] DSF ignores this field — never use it
@@ -186,13 +186,15 @@ property is hand-written (3.6) or a `model_prop` (3.7) — both store the value 
 | `BaseConnection.connect`/`_connect` reads a full JSON greeting | **[both]** | Upstream does `self.socket.recv(50)`; the greeting carries a GUID and is longer → `JSONDecodeError: Unterminated string`. **3.7 renamed the method to `_connect`**: patch whichever names the class has, or the patch lands on a method nothing calls and fails silently |
 | `dsf.object_model.utils._set_model_prop` accepts `None` for dictionaries/collections | **[3.7 only]** | Non-nullable `model_prop`s (`GCodeFileInfo.custom_info`, `ObjectModel.globals`, `PluginManifest.data`) have no `None` branch; DSF sends `"customInfo": null` in PATCH updates → `TypeError: GCodeFileInfo._custom_info must be of type ModelDictionary ... Got NoneType`, and the whole patch is dropped. `ModelDictionary.update_from_json(None)` already means "clear", so route `None` there. 3.6 has getter-only `custom_info` that the deserializer skips |
 
-| `_missing_` hook on every enum under `dsf.object_model` | **[both]** | DSF grows its enums faster than dsf-python follows (`EndstopType.motorStallEncoder`, added to DSF 3.7, crashed the first `get_object_model()` on a DSF 3.7 printer; both dsf-python branches lack it). Any unknown string/int now becomes a pseudo-member carrying the raw value (as `enum.Flag` does), logged once per value; enums with their own `_missing_` are left alone. Makes per-value patches like `BoardState`/`NetworkInterfaceType` unnecessary for future values |
+| `_missing_` hook on every enum under `dsf.object_model` | **[both]** | DSF grows its enums faster than dsf-python follows (`EndstopType.motorStallEncoder`, added to DSF 3.7, crashed the first `get_object_model()` on a DSF 3.7 printer; both dsf-python branches lack it). Any unknown string/int now becomes a pseudo-member carrying the raw value (as `enum.Flag` does), warned about once per value on the DWC console (§4.2); enums with their own `_missing_` are left alone. Makes per-value patches like `BoardState`/`NetworkInterfaceType` unnecessary for future values |
+| `_KNOWN_ENUM_ADDITIONS`: `EndstopType.MotorStallEncoder = "motorStallEncoder"` added as a real member | **[both]** | DSF 3.7 reports it on every printer with an encoder-monitored axis, so it should neither warn on every start nor depend on the hook. `_add_enum_member()` registers it under its DuetAPI name (class attribute first — `EnumType.__setattr__` refuses names already in `_member_map_`); skipped once the library has the name. Add further values DSF is known to send there; report them upstream as well |
 
 Verified against dsf-python v3.6-dev and v3.7-dev (3.7.0-beta.1) on 2026-09-10; the
 `_set_model_prop` patch against v3.7-dev @ b1af5bb on 2026-09-12; the enum `_missing_`
-hook against v3.6-dev @ 23308a2 and v3.7-dev @ b1af5bb (real libraries, Python 3.12) on
-2026-09-16, `EndstopType` checked in DuetSoftwareFramework v3.7-dev @ b39ba09 (has
-`MotorStallEncoder`) and v3.6-dev @ bffcfbf (does not).
+hook and the `MotorStallEncoder` member against v3.6-dev @ 23308a2 and v3.7-dev @ b1af5bb
+(real libraries, Python 3.12) on 2026-09-16, `EndstopType` checked in
+DuetSoftwareFramework v3.7-dev @ 46886f5 (has `MotorStallEncoder`, "encoder position
+error stops all the drives when triggered") and v3.6-dev @ bffcfbf (does not).
 
 ### 4.1 Things that are the same on both and are NOT bugs [both]
 - `resolve_path()` returns a **Response object**, not a string: `real = getattr(resp, "result", resp)`.
@@ -200,6 +202,19 @@ hook against v3.6-dev @ 23308a2 and v3.7-dev @ b1af5bb (real libraries, Python 3
 - `from dsf.object_model import HttpEndpointType` and `from dsf.http import HttpResponseType` work on both.
 
 ---
+### 4.2 Console output: errors on stderr, warnings via `write_message` [both]
+With `sbcOutputRedirected` DSF turns every stderr line into an `Error:` console message and
+every stdout line into a `Success:` one — there is no third kind (`DuetPluginService/
+Commands/StartPlugin.cs`, `MakeOutputHandler`, prefix `[<plugin id>]: `). A warning logged
+to stderr therefore reads `Error: [Vigil]: ...` in DWC. The daemon's `vigil` logger has two
+handlers: a stderr handler at ERROR and `_DeferredWarnings`, which collects WARNING records
+until the command connection is up and then sends them with
+`cmd.write_message(MessageType.Warning, "[Vigil]: ...", True, LogLevel.Warn)` (same
+signature on both generations, verified 2026-09-16). `main()` calls `send_to(cmd)` after
+connecting, after every object-model update (where the enum hook warns) and on shutdown;
+anything DSF refuses falls back to stderr. Use `logger.warning()` as before — the routing is
+the handler's job; child loggers (`vigil.tracker` etc.) propagate into it.
+
 ## 5. dsf-python 3.6 vs 3.7 API Differences (verified 2026-09-12)
 | Topic | 3.6 (`v3.6-dev`) | 3.7 (`v3.7-dev`) | What the daemon does |
 |---|---|---|---|
@@ -370,7 +385,8 @@ pytest tests/ -v
 | `BoardState` crash on `timedOut` | both | Replace enum + safe setter |
 | `NetworkInterfaceType` crash on `ethernet` | 3.6 only | Replace enum + safe setter |
 | `Axis.letter` crash on `'\x00'` | both | Safe setter → `AxisLetter.none` |
-| `ValueError: 'motorStallEncoder' is not a valid EndstopType` (or any other enum value dsf-python lacks) | both | Generic `_missing_` hook on every `dsf.object_model` enum mints a pseudo-member with the raw value; no per-value patch needed |
+| `ValueError: '<value>' is not a valid EndstopType` (any enum value dsf-python lacks) | both | Generic `_missing_` hook on every `dsf.object_model` enum mints a pseudo-member with the raw value and warns once; values DSF is known to send (`motorStallEncoder`) become real members via `_KNOWN_ENUM_ADDITIONS` |
+| `logger.warning()` shows as `Error: [Vigil]: ...` in DWC | both | stderr is always an error to DSF; the `_DeferredWarnings` handler sends warnings through `write_message(MessageType.Warning, ...)` (§4.2) |
 | `SubscribeConnection(mode, "filter")` — second positional means different things | both | Pass `filter_list=[...]` by keyword; `filter_str` does not exist on 3.7 |
 | `get_object_model()` called in the PATCH loop | both | Once for the full model, then `get_object_model_patch()`; on 3.7 later calls silently drain patches instead of blocking |
 | `resolve_path()` returns an object | both | `getattr(response, "result", response)` |

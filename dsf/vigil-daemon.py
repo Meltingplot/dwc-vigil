@@ -193,7 +193,11 @@ except Exception:
 # object-model update. Instead of chasing each value, give every enum under dsf.object_model
 # a `_missing_` hook that mints a pseudo-member carrying the raw value (the mechanism
 # `enum.Flag` uses for composite values): the value survives unchanged, `str`/`int` mixin
-# comparisons keep working, and each new value is logged once so it can be reported upstream.
+# comparisons keep working, and each new value is warned about once (a DWC console warning,
+# see the logging setup below) so it can be reported upstream.
+#
+# Values DSF is known to report already are registered as real named members instead
+# (_KNOWN_ENUM_ADDITIONS), so they neither warn nor depend on the hook.
 try:
     import importlib as _importlib
     import pkgutil as _pkgutil
@@ -237,12 +241,46 @@ try:
             _importlib.import_module(_info.name)
         except Exception:
             pass
+    _dsf_enums = {}
     for _mod_name, _mod in list(sys.modules.items()):
         if not _mod_name.startswith("dsf.object_model") or _mod is None:
             continue
         for _obj in list(vars(_mod).values()):
             if _is_dsf_enum(_obj):
                 _obj._missing_ = classmethod(_mint_pseudo_member)
+                _dsf_enums[_obj.__name__] = _obj
+
+    # Both generations: values DSF reports today that neither dsf-python branch has yet,
+    # added as real members under their DuetAPI names. Drop an entry once upstream
+    # dsf-python carries it (the registration is skipped when the name already exists).
+    #   EndstopType.MotorStallEncoder -- "encoder position error stops all the drives when
+    #   triggered", DuetSoftwareFramework v3.7-dev @ 46886f5; dsf-python v3.6-dev @ 23308a2
+    #   and v3.7-dev @ b1af5bb both lack it (checked 2026-09-16).
+    _KNOWN_ENUM_ADDITIONS = {
+        "EndstopType": (("MotorStallEncoder", "motorStallEncoder"),),
+    }
+
+    def _add_enum_member(cls, name, value):
+        if name in cls.__members__:
+            return
+        cache = getattr(cls, "_value2member_map_", None)
+        member = cache.get(value) if cache is not None else None
+        if member is None:
+            member_type = getattr(cls, "_member_type_", object)
+            member = object.__new__(cls) if member_type is object else member_type.__new__(cls, value)
+            member._value_ = value
+        member._name_ = name
+        # The class attribute first: EnumType.__setattr__ refuses names already in _member_map_
+        setattr(cls, name, member)
+        cls._member_map_[name] = member
+        cls._member_names_.append(name)
+        if cache is not None:
+            cache[value] = member
+
+    for _enum_name, _additions in _KNOWN_ENUM_ADDITIONS.items():
+        if _enum_name in _dsf_enums:
+            for _member_name, _member_value in _additions:
+                _add_enum_member(_dsf_enums[_enum_name], _member_name, _member_value)
 except Exception:
     pass
 
@@ -300,25 +338,67 @@ except Exception:
     pass
 
 from dsf.connections import CommandConnection, SubscribeConnection, SubscriptionMode
-from dsf.object_model import HttpEndpointType
+from dsf.object_model import HttpEndpointType, LogLevel, MessageType
 from dsf.http import HttpEndpointConnection, HttpResponseType
 
 from vigil_tracker import VigilTracker
 from vigil_persistence import load_data, ensure_data_dir, SAVE_INTERVAL_S
 from vigil_api import ENDPOINTS, json_response, error_response
 
-# DSF redirects stdout to "success" messages and stderr to "error" messages in
-# the DWC console (sbcOutputRedirected). Log to stderr so warnings and errors
-# are not reported as successes.
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(message)s",
-    stream=sys.stderr,
-)
-logger = logging.getLogger("vigil")
-
 PLUGIN_ID = "Vigil"
 API_NAMESPACE = "Vigil"
+
+
+# Both generations: DSF redirects the daemon's stdout to "success" and its stderr to
+# "error" console messages (sbcOutputRedirected), and those are the only two kinds it can
+# make of them -- a warning written to stderr shows up in DWC as "Error: [Vigil]: ...".
+# So only errors go to stderr. Warnings wait here until the command connection is up and
+# then reach the console through write_message() as what they are; the main loop hands
+# them over right after every object-model update, where most of them arise (the enum
+# hook above). Anything DSF refuses falls back to stderr rather than getting lost.
+class _StderrHandler(logging.StreamHandler):
+    """Writes to whatever sys.stderr is at the time (as logging.lastResort does)."""
+
+    def __init__(self):
+        logging.Handler.__init__(self)
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+
+class _DeferredWarnings(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.WARNING)
+        self.pending = []
+
+    def emit(self, record):
+        if record.levelno < logging.ERROR:
+            self.pending.append(self.format(record))
+
+    def send_to(self, cmd):
+        while self.pending:
+            text = self.pending[0]
+            try:
+                cmd.write_message(MessageType.Warning, "[%s]: %s" % (PLUGIN_ID, text), True, LogLevel.Warn)
+            except Exception:
+                sys.stderr.write(text + "\n")
+                sys.stderr.flush()
+            del self.pending[0]
+
+
+logger = logging.getLogger("vigil")
+logger.setLevel(logging.WARNING)
+for _handler in list(logger.handlers):
+    if getattr(_handler, "_vigil_owned", False):
+        logger.removeHandler(_handler)
+_stderr_handler = _StderrHandler()
+_stderr_handler.setLevel(logging.ERROR)
+_deferred_warnings = _DeferredWarnings()
+for _handler in (_stderr_handler, _deferred_warnings):
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    _handler._vigil_owned = True
+    logger.addHandler(_handler)
 
 # DSF may launch the plugin before duetcontrolserver accepts connections
 # (e.g. on boot or right after a plugin upgrade). Retry instead of exiting,
@@ -453,6 +533,7 @@ def main():
     cmd = CommandConnection()
     if not connect_with_retry(cmd, "CommandConnection"):
         return
+    _deferred_warnings.send_to(cmd)
 
     endpoints = []
     sub = None
@@ -473,6 +554,7 @@ def main():
         # First call: receive the complete object model
         object_model = sub.get_object_model()
         tracker.update(object_model)
+        _deferred_warnings.send_to(cmd)
 
         logger.debug("Vigil daemon started — tracking active")
 
@@ -486,6 +568,7 @@ def main():
                 patch = sub.get_object_model_patch()
                 object_model.update_from_json(patch)
                 tracker.update(object_model)
+                _deferred_warnings.send_to(cmd)
             except TimeoutError:
                 pass
             except Exception as e:
@@ -515,6 +598,7 @@ def main():
             logger.error("Final save failed: %s", e)
 
         # Cleanup
+        _deferred_warnings.send_to(cmd)
         for ep in endpoints:
             try:
                 ep.close()
