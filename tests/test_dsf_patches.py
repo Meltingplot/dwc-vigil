@@ -71,7 +71,7 @@ def _install_dsf(monkeypatch, connect_name):
         letter = _make_model_prop("letter", AxisLetter)
 
     class EndstopType(str, Enum):
-        """Both generations: no motorStallEncoder (added to DSF 3.7)."""
+        """Both generations: no motorStallEncoder (added to DSF 3.7), nor anything newer."""
 
         InputPin = "inputPin"
         Unknown = "unknown"
@@ -189,7 +189,9 @@ def _install_dsf(monkeypatch, connect_name):
                 return self._custom_info
 
     module("dsf")
-    module("dsf.object_model", HttpEndpointType=Enum("HttpEndpointType", {"GET": "GET", "POST": "POST"}))
+    module("dsf.object_model", HttpEndpointType=Enum("HttpEndpointType", {"GET": "GET", "POST": "POST"}),
+           MessageType=Enum("MessageType", {"Success": 0, "Warning": 1, "Error": 2}),
+           LogLevel=Enum("LogLevel", {"Debug": "debug", "Info": "info", "Warn": "warn", "Off": "off"}))
     module("dsf.object_model.plugins")
     module("dsf.object_model.plugins.plugin_manifest", PluginManifest=PluginManifest)
     module("dsf.object_model.model_dictionary", ModelDictionary=ModelDictionary)
@@ -328,23 +330,57 @@ def test_uninitialised_axis_letter_falls_back(dsf):
 
 def test_an_enum_value_dsf_python_lacks_is_kept_instead_of_aborting_the_model(dsf, caplog):
     endstop = dsf.Endstop()
-    # DSF 3.7 reports motorStallEncoder, which neither dsf-python branch knows. Unpatched,
-    # EndstopType("motorStallEncoder") raised ValueError and the very first
-    # get_object_model() took the daemon down.
+    # Unpatched, EndstopType("<anything dsf-python lacks>") raised ValueError and the
+    # very first get_object_model() took the daemon down (motorStallEncoder did, on a
+    # DSF 3.7 printer; that one is a real member now, see the next test).
     with caplog.at_level("WARNING", logger="vigil"):
-        endstop.type = "motorStallEncoder"
-        endstop.type = "motorStallEncoder"
+        endstop.type = "motorStallTelepathy"
+        endstop.type = "motorStallTelepathy"
 
-    assert endstop.type == "motorStallEncoder"
+    assert endstop.type == "motorStallTelepathy"
     assert isinstance(endstop.type, dsf.EndstopType)
     # The same pseudo-member comes back on every lookup, and it is reported once
-    assert dsf.EndstopType("motorStallEncoder") is endstop.type
+    assert dsf.EndstopType("motorStallTelepathy") is endstop.type
     assert [r.getMessage() for r in caplog.records] == [
-        "dsf-python's EndstopType has no value 'motorStallEncoder'; keeping it as-is"
+        "dsf-python's EndstopType has no value 'motorStallTelepathy'; keeping it as-is"
+    ]
+    # ... as a warning for the DWC console, not on stderr (which DSF shows as an error)
+    assert dsf.daemon._deferred_warnings.pending == [
+        "dsf-python's EndstopType has no value 'motorStallTelepathy'; keeping it as-is"
     ]
 
     endstop.type = "inputPin"
     assert endstop.type is dsf.EndstopType.InputPin
+
+
+def test_motor_stall_encoder_is_a_real_member_and_does_not_warn(dsf, caplog):
+    # DSF 3.7 reports it on every printer with an encoder-monitored axis, so it is added
+    # under its DuetAPI name rather than minted anew on every start.
+    member = dsf.EndstopType.MotorStallEncoder
+    assert member.name == "MotorStallEncoder"
+    assert member.value == "motorStallEncoder"
+    assert member == "motorStallEncoder"
+    assert dsf.EndstopType("motorStallEncoder") is member
+    assert dsf.EndstopType.__members__["MotorStallEncoder"] is member
+    assert member in list(dsf.EndstopType)
+
+    endstop = dsf.Endstop()
+    with caplog.at_level("WARNING", logger="vigil"):
+        endstop.type = "motorStallEncoder"
+    assert endstop.type is member
+    assert caplog.records == []
+    assert dsf.daemon._deferred_warnings.pending == []
+
+    # Existing members are untouched
+    assert dsf.EndstopType("inputPin") is dsf.EndstopType.InputPin
+    assert len(dsf.EndstopType) == 3
+
+
+def test_registering_a_member_the_library_already_has_is_a_no_op(dsf):
+    before = dict(dsf.EndstopType.__members__)
+    dsf.daemon._add_enum_member(dsf.EndstopType, "InputPin", "somethingElse")
+    assert dict(dsf.EndstopType.__members__) == before
+    assert dsf.EndstopType.InputPin.value == "inputPin"
 
 
 def test_the_enum_hook_covers_int_enums_and_still_rejects_garbage(dsf):

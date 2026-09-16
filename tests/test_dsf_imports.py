@@ -34,6 +34,8 @@ def mock_dsf_modules(monkeypatch):
         DELETE = "DELETE"
 
     dsf_om.HttpEndpointType = _HttpEndpointType
+    dsf_om.MessageType = Enum("MessageType", {"Success": 0, "Warning": 1, "Error": 2})
+    dsf_om.LogLevel = Enum("LogLevel", {"Debug": "debug", "Info": "info", "Warn": "warn", "Off": "off"})
 
     # dsf.http
     dsf_http = types.ModuleType("dsf.http")
@@ -66,6 +68,8 @@ def mock_dsf_modules(monkeypatch):
         ("dsf.connections", "SubscribeConnection"),
         ("dsf.connections", "SubscriptionMode"),
         ("dsf.object_model", "HttpEndpointType"),
+        ("dsf.object_model", "MessageType"),
+        ("dsf.object_model", "LogLevel"),
         ("dsf.http", "HttpEndpointConnection"),
         ("dsf.http", "HttpResponseType"),
     ],
