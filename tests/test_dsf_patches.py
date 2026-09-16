@@ -70,6 +70,33 @@ def _install_dsf(monkeypatch, connect_name):
     class Axis:
         letter = _make_model_prop("letter", AxisLetter)
 
+    class EndstopType(str, Enum):
+        """Both generations: no motorStallEncoder (added to DSF 3.7)."""
+
+        InputPin = "inputPin"
+        Unknown = "unknown"
+
+    class Endstop:
+        type = _make_model_prop("type", EndstopType)
+
+    class DriverMode(int, Enum):
+        """An int-mixin enum, of which the object model has a handful."""
+
+        constantOffTime = 0
+
+    class HandledElsewhere(str, Enum):
+        """An enum with its own _missing_ hook, which the patch must not override."""
+
+        fallback = "fallback"
+
+        @classmethod
+        def _missing_(cls, value):
+            return cls.fallback
+
+    # The hook only touches enums the library itself defines
+    for enum_cls in (EndstopType, DriverMode, HandledElsewhere):
+        enum_cls.__module__ = "dsf.object_model.sensors.endstop"
+
     class BaseConnection:
         def __init__(self):
             self.timeout = 1
@@ -177,6 +204,9 @@ def _install_dsf(monkeypatch, connect_name):
            NetworkInterfaceType=NetworkInterfaceType)
     module("dsf.object_model.move")
     module("dsf.object_model.move.axis", Axis=Axis, AxisLetter=AxisLetter)
+    module("dsf.object_model.sensors")
+    module("dsf.object_model.sensors.endstop", Endstop=Endstop, EndstopType=EndstopType,
+           DriverMode=DriverMode, HandledElsewhere=HandledElsewhere)
     module("dsf.connections", CommandConnection=MagicMock, SubscribeConnection=MagicMock,
            SubscriptionMode=MagicMock)
     module("dsf.connections.base_connection", BaseConnection=BaseConnection)
@@ -192,15 +222,16 @@ def _install_dsf(monkeypatch, connect_name):
     spec = importlib.util.spec_from_file_location("vigil_daemon_patched", DAEMON)
     daemon = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(daemon)
-    return daemon, BaseConnection, Board, NetworkInterface, Axis, GCodeFileInfo
+    return daemon, BaseConnection, Board, NetworkInterface, Axis, GCodeFileInfo, Endstop
 
 
 @pytest.fixture(params=["connect", "_connect"], ids=["dsf3.6", "dsf3.7"])
 def dsf(request, monkeypatch):
     """Both library shapes: 3.6 names the method connect(), 3.7 _connect()."""
-    daemon, base_connection, board, network_interface, axis, gcode_file_info = _install_dsf(
+    daemon, base_connection, board, network_interface, axis, gcode_file_info, endstop = _install_dsf(
         monkeypatch, request.param
     )
+    endstop_module = sys.modules["dsf.object_model.sensors.endstop"]
     return types.SimpleNamespace(
         daemon=daemon,
         connect_name=request.param,
@@ -209,6 +240,10 @@ def dsf(request, monkeypatch):
         NetworkInterface=network_interface,
         Axis=axis,
         GCodeFileInfo=gcode_file_info,
+        Endstop=endstop,
+        EndstopType=endstop_module.EndstopType,
+        DriverMode=endstop_module.DriverMode,
+        HandledElsewhere=endstop_module.HandledElsewhere,
     )
 
 
@@ -289,6 +324,41 @@ def test_uninitialised_axis_letter_falls_back(dsf):
 
     axis.letter = "X"
     assert axis.letter == "X"
+
+
+def test_an_enum_value_dsf_python_lacks_is_kept_instead_of_aborting_the_model(dsf, caplog):
+    endstop = dsf.Endstop()
+    # DSF 3.7 reports motorStallEncoder, which neither dsf-python branch knows. Unpatched,
+    # EndstopType("motorStallEncoder") raised ValueError and the very first
+    # get_object_model() took the daemon down.
+    with caplog.at_level("WARNING", logger="vigil"):
+        endstop.type = "motorStallEncoder"
+        endstop.type = "motorStallEncoder"
+
+    assert endstop.type == "motorStallEncoder"
+    assert isinstance(endstop.type, dsf.EndstopType)
+    # The same pseudo-member comes back on every lookup, and it is reported once
+    assert dsf.EndstopType("motorStallEncoder") is endstop.type
+    assert [r.getMessage() for r in caplog.records] == [
+        "dsf-python's EndstopType has no value 'motorStallEncoder'; keeping it as-is"
+    ]
+
+    endstop.type = "inputPin"
+    assert endstop.type is dsf.EndstopType.InputPin
+
+
+def test_the_enum_hook_covers_int_enums_and_still_rejects_garbage(dsf):
+    assert dsf.DriverMode(7) == 7
+    assert isinstance(dsf.DriverMode(7), dsf.DriverMode)
+
+    with pytest.raises(ValueError):
+        dsf.EndstopType(None)
+    with pytest.raises(ValueError):
+        dsf.EndstopType(["not", "a", "value"])
+
+
+def test_the_enum_hook_leaves_an_existing_missing_hook_alone(dsf):
+    assert dsf.HandledElsewhere("anything") is dsf.HandledElsewhere.fallback
 
 
 def test_null_custom_info_clears_the_dictionary_instead_of_aborting_the_patch(dsf):

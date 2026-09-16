@@ -183,6 +183,69 @@ try:
 except Exception:
     pass
 
+# Both generations: DSF grows its enums faster than dsf-python follows. BoardState.timedOut
+# and NetworkInterfaceType.ethernet above were the first two; EndstopType.motorStallEncoder
+# (added to DSF 3.7, reported from a DSF 3.7 printer on 2026-09-16, missing from both
+# dsf-python branches) took the daemon down at the very first get_object_model(). Every
+# model enum is a plain `Enum` whose lookup -- `EndstopType("motorStallEncoder")` -- raises
+# ValueError, and that lookup is exactly what both generations' setters do (3.6 hand-written,
+# 3.7 via `_set_model_prop`), so one unknown string in one sub-object aborts the whole
+# object-model update. Instead of chasing each value, give every enum under dsf.object_model
+# a `_missing_` hook that mints a pseudo-member carrying the raw value (the mechanism
+# `enum.Flag` uses for composite values): the value survives unchanged, `str`/`int` mixin
+# comparisons keep working, and each new value is logged once so it can be reported upstream.
+try:
+    import importlib as _importlib
+    import pkgutil as _pkgutil
+    from enum import Enum as _Enum
+
+    import dsf.object_model as _om_pkg
+
+    _seen_unknown_enum_values = set()
+
+    def _mint_pseudo_member(cls, value):
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return None  # let Enum raise its usual ValueError
+        cache = getattr(cls, "_value2member_map_", None)
+        if cache is not None and value in cache:
+            return cache[value]
+        member_type = getattr(cls, "_member_type_", object)
+        member = object.__new__(cls) if member_type is object else member_type.__new__(cls, value)
+        member._name_ = str(value)
+        member._value_ = value
+        if cache is not None:
+            member = cache.setdefault(value, member)
+        if (cls.__name__, value) not in _seen_unknown_enum_values:
+            _seen_unknown_enum_values.add((cls.__name__, value))
+            logging.getLogger("vigil").warning(
+                "dsf-python's %s has no value %r; keeping it as-is", cls.__name__, value
+            )
+        return member
+
+    def _is_dsf_enum(obj):
+        return (
+            isinstance(obj, type)
+            and issubclass(obj, _Enum)
+            and getattr(obj, "__module__", "").startswith("dsf.")
+            and "_missing_" not in vars(obj)
+        )
+
+    # Import every object-model module so its enums exist, then hook whatever is loaded
+    # (a module that fails to import just keeps its own enums unhooked).
+    for _info in _pkgutil.walk_packages(getattr(_om_pkg, "__path__", []), _om_pkg.__name__ + "."):
+        try:
+            _importlib.import_module(_info.name)
+        except Exception:
+            pass
+    for _mod_name, _mod in list(sys.modules.items()):
+        if not _mod_name.startswith("dsf.object_model") or _mod is None:
+            continue
+        for _obj in list(vars(_mod).values()):
+            if _is_dsf_enum(_obj):
+                _obj._missing_ = classmethod(_mint_pseudo_member)
+except Exception:
+    pass
+
 # Both generations: the server init message is read with a fixed-size
 # self.socket.recv(50). DSF sends a greeting longer than 50 bytes (e.g. one carrying a
 # GUID id), so the JSON is truncated mid-string and json.loads raises
