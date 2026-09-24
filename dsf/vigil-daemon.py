@@ -570,7 +570,9 @@ def main():
                 tracker.update(object_model)
                 _deferred_warnings.send_to(cmd)
             except TimeoutError:
-                pass
+                # No patch: still count a finished job whose outcome flags
+                # never changed once its grace period is over.
+                tracker.resolve_pending_job()
             except Exception as e:
                 if _shutdown:
                     break
@@ -592,6 +594,7 @@ def main():
         # Shutdown: create final snapshot and save
         logger.debug("Saving final state...")
         try:
+            tracker.resolve_pending_job(force=True)
             tracker.create_shutdown_snapshot()
             tracker.save()
         except Exception as e:

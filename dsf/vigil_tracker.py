@@ -45,6 +45,10 @@ class VigilTracker:
         self._prev_extruder_pos = {}  # extruder_index → position
         self._prev_status = None
         self._prev_job_file = None
+        # Job outcome classification (see _update_job_tracking)
+        self._job_flags = None         # (cancelled, aborted) seen while the job ran
+        self._last_job_flags = (False, False)  # (cancelled, aborted) at the last update
+        self._pending_job_end = None   # {"since": monotonic, "flags": (c, a) | None}
         self._prev_warmup_duration = None  # job.warm_up_duration from previous tick
         self._prev_pause_duration = None   # job.pause_duration from previous tick
         self._prev_firmware_uptime = None
@@ -142,6 +146,11 @@ class VigilTracker:
         if status == "processing":
             self._add("print_seconds", dt)
 
+    # How long a finished job waits for DSF to publish its outcome flags. When
+    # they do not change within this window the job ended the same way as the
+    # previous one (DSF only sends changed values).
+    JOB_OUTCOME_GRACE_SECS = 10.0
+
     def _update_job_tracking(self, status: str, model):
         """Track job start/end transitions.
 
@@ -150,29 +159,47 @@ class VigilTracker:
         status. The ~250ms PATCH subscription frequently misses that status
         (DSF passes through processing -> cancelling -> idle too quickly to
         observe reliably), and aborts can settle to "halted" without ever
-        reporting "cancelling" — both cases previously went uncounted or were
-        miscounted as successful.
+        reporting "cancelling".
+
+        [both] The flags cannot be read on the job-end edge itself: RRF clears
+        job.file.fileName as soon as it stops printing, while DSF sets
+        last_file_* in JobProcessor only after StopPrint has returned (or after
+        it noticed the M0 cancel), so the patch clearing the file name usually
+        arrives before the one with the flags. Reading them on the edge gave the
+        previous job's outcome: a cancel after a success counted as successful,
+        a success after a cancel as cancelled. Reported on a DSF/RRF 3.7
+        printer; the ordering is identical in DuetSoftwareFramework v3.6-dev
+        @ 1205984 and v3.7-dev @ 9001d77 (JobProcessor.cs, verified
+        2026-09-24). The outcome is therefore held pending until the flags
+        differ from the values seen while the job ran, or until
+        JOB_OUTCOME_GRACE_SECS pass without a change (same outcome as before).
         """
         job = getattr(model, "job", None)
         job_file_info = getattr(job, "file", None) if job is not None else None
         job_file = getattr(job_file_info, "file_name", None) if job_file_info is not None else None
+        flags = (
+            bool(getattr(job, "last_file_cancelled", False)) if job is not None else False,
+            bool(getattr(job, "last_file_aborted", False)) if job is not None else False,
+        )
+        self._last_job_flags = flags
 
-        # Job start: file_name transitions from None to value
+        # Job start: file_name transitions from None to value. A job still
+        # waiting for its outcome keeps the flags it has now: DSF does not touch
+        # them while the next job runs.
         if job_file is not None and self._prev_job_file is None:
+            self.resolve_pending_job(force=True)
             self._add("jobs_total", 1)
             self._dirty = True
 
-        # Job end: the current job file is cleared (value -> None). DSF sets the
-        # last_file_* flags atomically when the job finishes, so classify the
-        # outcome from those rather than from the transient status.
+        if job_file is not None:
+            self._job_flags = flags
+
+        # Job end: the current job file is cleared (value -> None)
         if self._prev_job_file is not None and job_file is None:
-            cancelled = bool(getattr(job, "last_file_cancelled", False)) if job is not None else False
-            aborted = bool(getattr(job, "last_file_aborted", False)) if job is not None else False
-            if cancelled or aborted:
-                self._add("jobs_cancelled", 1)
-            else:
-                self._add("jobs_successful", 1)
-            self._dirty = True
+            self._pending_job_end = {"since": time.monotonic(), "flags": self._job_flags}
+            self._job_flags = None
+
+        self.resolve_pending_job()
 
         # Warm-up and pause: use job.warm_up_duration and job.pause_duration
         # from the ObjectModel. These are running counters (seconds) that tick
@@ -204,6 +231,29 @@ class VigilTracker:
             self._prev_pause_duration = pause_dur
 
         self._prev_job_file = job_file
+
+    def resolve_pending_job(self, force: bool = False):
+        """Count a finished job once its outcome is known (see _update_job_tracking).
+
+        Also called by the daemon when no patch arrived within the subscribe
+        timeout, and with force=True on shutdown, so a job ending right before
+        a quiet period or a stop is still counted.
+        """
+        pending = self._pending_job_end
+        if pending is None:
+            return
+        flags = self._last_job_flags
+        changed = pending["flags"] is None or flags != pending["flags"]
+        expired = (time.monotonic() - pending["since"]) >= self.JOB_OUTCOME_GRACE_SECS
+        if not (force or changed or expired):
+            return
+        self._pending_job_end = None
+        cancelled, aborted = flags
+        if cancelled or aborted:
+            self._add("jobs_cancelled", 1)
+        else:
+            self._add("jobs_successful", 1)
+        self._dirty = True
 
     HOMING_GRACE_SECS = 10.0
 
