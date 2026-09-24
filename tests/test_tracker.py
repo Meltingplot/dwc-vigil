@@ -482,6 +482,83 @@ class TestJobTracking:
         assert status["lifetime"]["jobs_successful"] == 0
 
 
+
+class TestJobOutcomeRace:
+    """[both] RRF clears job.file.fileName before DSF publishes the job's
+    last_file_* flags, so the outcome must not be read on the job-end edge."""
+
+    @staticmethod
+    def _tick(tracker, state, file_name, cancelled=False, aborted=False):
+        tracker._timer.reset()
+        tracker._timer._last_tick -= 0.1
+        tracker.update(_model(state=state, job=_job(
+            file_name, last_file_cancelled=cancelled, last_file_aborted=aborted)))
+
+    @staticmethod
+    def _counts(tracker):
+        lt = tracker.get_status()["lifetime"]
+        return lt["jobs_total"], lt["jobs_successful"], lt["jobs_cancelled"]
+
+    def test_cancel_after_success_flags_arrive_late(self, tracker):
+        self._tick(tracker, "processing", "a.gcode")
+        self._tick(tracker, "idle", None)            # file cleared, flags still old
+        assert self._counts(tracker) == (1, 0, 0)
+        self._tick(tracker, "idle", None, cancelled=True)
+        assert self._counts(tracker) == (1, 0, 1)
+
+    def test_success_after_cancel_flags_arrive_late(self, tracker):
+        self._tick(tracker, "processing", "a.gcode", cancelled=True)
+        self._tick(tracker, "idle", None, cancelled=True)
+        assert self._counts(tracker) == (1, 0, 0)
+        self._tick(tracker, "idle", None)
+        assert self._counts(tracker) == (1, 1, 0)
+
+    def test_abort_after_cancel_counts_cancelled(self, tracker):
+        self._tick(tracker, "processing", "a.gcode", cancelled=True)
+        self._tick(tracker, "halted", None, cancelled=True)
+        self._tick(tracker, "halted", None, aborted=True)
+        assert self._counts(tracker) == (1, 0, 1)
+
+    def test_flags_in_same_patch_as_end(self, tracker):
+        self._tick(tracker, "processing", "a.gcode")
+        self._tick(tracker, "idle", None, cancelled=True)
+        assert self._counts(tracker) == (1, 0, 1)
+
+    def test_unchanged_flags_resolve_after_grace(self, tracker):
+        self._tick(tracker, "processing", "a.gcode", cancelled=True)
+        self._tick(tracker, "idle", None, cancelled=True)
+        tracker.resolve_pending_job()
+        assert self._counts(tracker) == (1, 0, 0)
+        tracker._pending_job_end["since"] -= tracker.JOB_OUTCOME_GRACE_SECS
+        tracker.resolve_pending_job()
+        assert self._counts(tracker) == (1, 0, 1)
+        tracker.resolve_pending_job()
+        self._tick(tracker, "idle", None, cancelled=True)
+        assert self._counts(tracker) == (1, 0, 1)
+
+    def test_unchanged_success_resolves_on_later_patch(self, tracker):
+        self._tick(tracker, "processing", "a.gcode")
+        self._tick(tracker, "idle", None)
+        tracker._pending_job_end["since"] -= tracker.JOB_OUTCOME_GRACE_SECS
+        self._tick(tracker, "idle", None)
+        assert self._counts(tracker) == (1, 1, 0)
+
+    def test_next_job_start_resolves_pending(self, tracker):
+        self._tick(tracker, "processing", "a.gcode")
+        self._tick(tracker, "idle", None)
+        self._tick(tracker, "processing", "b.gcode")
+        assert self._counts(tracker) == (2, 1, 0)
+        self._tick(tracker, "idle", None)
+        self._tick(tracker, "idle", None, cancelled=True)
+        assert self._counts(tracker) == (2, 1, 1)
+
+    def test_shutdown_forces_pending(self, tracker):
+        self._tick(tracker, "processing", "a.gcode")
+        self._tick(tracker, "idle", None)
+        tracker.resolve_pending_job(force=True)
+        assert self._counts(tracker) == (1, 1, 0)
+
+
 class TestServiceReset:
     def test_reset_machine_time(self, tracker, data_dir):
         tracker._data["service"]["machine_seconds"] = 5000.0

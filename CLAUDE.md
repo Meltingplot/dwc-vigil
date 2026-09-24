@@ -389,6 +389,7 @@ pytest tests/ -v
 | `logger.warning()` shows as `Error: [Vigil]: ...` in DWC | both | stderr is always an error to DSF; the `_DeferredWarnings` handler sends warnings through `write_message(MessageType.Warning, ...)` (§4.2) |
 | `SubscribeConnection(mode, "filter")` — second positional means different things | both | Pass `filter_list=[...]` by keyword; `filter_str` does not exist on 3.7 |
 | `get_object_model()` called in the PATCH loop | both | Once for the full model, then `get_object_model_patch()`; on 3.7 later calls silently drain patches instead of blocking |
+| Job counted as the previous job's outcome (cancel → successful, success → cancelled) | both | RRF clears `job.file.fileName` before DSF sets `lastFileCancelled`/`lastFileAborted` (after `StopPrint`, `JobProcessor.cs`, DSF v3.6-dev @ 1205984 and v3.7-dev @ 9001d77, 2026-09-24; reported on 3.7). Never read the flags on the job-end edge: `VigilTracker` holds the outcome until they change, or 10 s pass |
 | `resolve_path()` returns an object | both | `getattr(response, "result", response)` |
 | `get_file()`/`put_file()` don't exist | both | `resolve_path()` + `open()` |
 | `state.plugins`/`model.plugins` is a Map | both | Guard with `instanceof Map` |
