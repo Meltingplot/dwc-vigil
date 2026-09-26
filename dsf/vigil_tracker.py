@@ -44,7 +44,7 @@ class VigilTracker:
         self._axis_homed_at = {}      # axis_name → monotonic timestamp of False→True
         self._prev_extruder_pos = {}  # extruder_index → position
         self._prev_status = None
-        self._prev_job_file = None
+        self._prev_job_active = None   # None until the first update after start
         # Job outcome classification (see _update_job_tracking)
         self._job_flags = None         # (cancelled, aborted) seen while the job ran
         self._last_job_flags = (False, False)  # (cancelled, aborted) at the last update
@@ -66,6 +66,7 @@ class VigilTracker:
             }
         if "volume_free_bytes" not in self._data:
             self._data["volume_free_bytes"] = None
+        self._data.setdefault("active_job", None)
         # Ensure new counter fields exist in lifetime/service tiers
         for tier in [self._data["lifetime"], self._data["service"]]:
             tier.setdefault("pause_seconds", 0.0)
@@ -154,6 +155,21 @@ class VigilTracker:
     def _update_job_tracking(self, status: str, model):
         """Track job start/end transitions.
 
+        [both] A job runs while job.duration is not None. RRF reports duration
+        only while PrintMonitor::IsPrinting() (set by StartedPrint, cleared by
+        StoppedPrint, unaffected by pausing; RepRapFirmware 3.6-dev @ 518cacb
+        and 3.7-dev @ 3638836, PrintMonitor.cpp, verified 2026-09-26).
+        job.file.file_name cannot be used for this: DSF 3.7 no longer asks RRF
+        for null values and rebuilds only the properties declared nullable when
+        they are missing, and GCodeFileInfo.FileName is a non-nullable string,
+        so after a job it keeps the last file name ("" before the first job)
+        instead of going back to null (DuetSoftwareFramework 32db3df "Object
+        model changes", in v3.7.0-rc.1, rc.2 and v3.7-dev @ 9001d77; DSF
+        v3.6-dev @ 1205984 still requests nulls with the "n" flag, verified
+        2026-09-26). Reported on a DSF 3.7.0-rc.2 printer: no job end was ever
+        counted, and every daemon start counted a job. Job.Duration is an
+        `int?` [Live] property, so DSF 3.7 resets it and 3.6 sends null.
+
         Job outcome is classified from the DSF job model's last_file_cancelled
         and last_file_aborted flags rather than the transient "cancelling"
         status. The ~250ms PATCH subscription frequently misses that status
@@ -162,9 +178,9 @@ class VigilTracker:
         reporting "cancelling".
 
         [both] The flags cannot be read on the job-end edge itself: RRF clears
-        job.file.fileName as soon as it stops printing, while DSF sets
+        job.duration as soon as it stops printing, while DSF sets
         last_file_* in JobProcessor only after StopPrint has returned (or after
-        it noticed the M0 cancel), so the patch clearing the file name usually
+        it noticed the M0 cancel), so the patch ending the job usually
         arrives before the one with the flags. Reading them on the edge gave the
         previous job's outcome: a cancel after a success counted as successful,
         a success after a cancel as cancelled. Reported on a DSF/RRF 3.7
@@ -175,6 +191,7 @@ class VigilTracker:
         JOB_OUTCOME_GRACE_SECS pass without a change (same outcome as before).
         """
         job = getattr(model, "job", None)
+        active = job is not None and getattr(job, "duration", None) is not None
         job_file_info = getattr(job, "file", None) if job is not None else None
         job_file = getattr(job_file_info, "file_name", None) if job_file_info is not None else None
         flags = (
@@ -183,19 +200,19 @@ class VigilTracker:
         )
         self._last_job_flags = flags
 
-        # Job start: file_name transitions from None to value. A job still
-        # waiting for its outcome keeps the flags it has now: DSF does not touch
-        # them while the next job runs.
-        if job_file is not None and self._prev_job_file is None:
+        if self._prev_job_active is None:
+            self._resume_job(active, job_file, job)
+        elif active and not self._prev_job_active:
+            # Job start. A job still waiting for its outcome keeps the flags it
+            # has now: DSF does not touch them while the next job runs.
             self.resolve_pending_job(force=True)
-            self._add("jobs_total", 1)
-            self._dirty = True
+            self._count_job_start(job_file)
 
-        if job_file is not None:
+        if active:
             self._job_flags = flags
 
-        # Job end: the current job file is cleared (value -> None)
-        if self._prev_job_file is not None and job_file is None:
+        # Job end
+        if self._prev_job_active and not active:
             self._pending_job_end = {"since": time.monotonic(), "flags": self._job_flags}
             self._job_flags = None
 
@@ -220,17 +237,42 @@ class VigilTracker:
                 self._add("pause_seconds", delta)
 
         # Reset when job ends (durations go back to None)
-        if warmup_dur is None or job_file is None:
+        if warmup_dur is None or not active:
             self._prev_warmup_duration = None
         else:
             self._prev_warmup_duration = warmup_dur
 
-        if pause_dur is None or job_file is None:
+        if pause_dur is None or not active:
             self._prev_pause_duration = None
         else:
             self._prev_pause_duration = pause_dur
 
-        self._prev_job_file = job_file
+        self._prev_job_active = active
+
+    def _count_job_start(self, job_file):
+        self._add("jobs_total", 1)
+        # Persisted with the counters, so a restart knows this job is counted
+        self._data["active_job"] = job_file if job_file is not None else ""
+
+    def _resume_job(self, active: bool, job_file, job):
+        """First update after the daemon started: pick up the job state of the last run.
+
+        A job that is still running was counted before the restart when it is the
+        one recorded in active_job, and its warm-up and pause time up to now too.
+        A recorded job that is no longer running ended while the daemon was down;
+        its outcome is unknown (DSF's flags are reset when DSF restarted as well),
+        so it stays counted in jobs_total only.
+        """
+        counted = self._data.get("active_job")
+        if active and counted is not None and counted == (job_file if job_file is not None else ""):
+            self._prev_warmup_duration = getattr(job, "warm_up_duration", None)
+            self._prev_pause_duration = getattr(job, "pause_duration", None)
+            return
+        if counted is not None:
+            self._data["active_job"] = None
+            self._dirty = True
+        if active:
+            self._count_job_start(job_file)
 
     def resolve_pending_job(self, force: bool = False):
         """Count a finished job once its outcome is known (see _update_job_tracking).
@@ -248,6 +290,7 @@ class VigilTracker:
         if not (force or changed or expired):
             return
         self._pending_job_end = None
+        self._data["active_job"] = None
         cancelled, aborted = flags
         if cancelled or aborted:
             self._add("jobs_cancelled", 1)
