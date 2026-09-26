@@ -227,6 +227,7 @@ the handler's job; child loggers (`vigil.tracker` etc.) propagate into it.
 | Python requirement | `>= 3.7` | `>= 3.11` | CI tests 3.10–3.12 with dsf mocked; real 3.7 spot checks need 3.11+ |
 | `has_data_available()` | absent | present | Not used |
 | `subscribe_to_keys()` | absent | present | Not used |
+| **DSF** (not dsf-python): nulls from RRF | Requested (`d99vno`/`d99fno`, `Updater.cs`), so every null arrives as `null` | No longer requested (`UpdateService.cs`, DSF 32db3df, in v3.7.0-rc.1+); a missing property is rebuilt as `null` **only if declared nullable**. Non-nullable ones such as `job.file.fileName` (`string`) keep their last value (`""` before the first job) | Never test a non-nullable C# property for `None`; job running = `job.duration is not None` (`int?`, `[Live]`). Verified DSF v3.6-dev @ 1205984, v3.7-dev @ 9001d77, 2026-09-26 |
 
 Same on both: `CommandConnection(debug=False, timeout=3)`; `TimeoutError` from
 `get_object_model_patch()` when idle (3 s default) is the loop heartbeat — catch it, don't exit.
@@ -389,7 +390,9 @@ pytest tests/ -v
 | `logger.warning()` shows as `Error: [Vigil]: ...` in DWC | both | stderr is always an error to DSF; the `_DeferredWarnings` handler sends warnings through `write_message(MessageType.Warning, ...)` (§4.2) |
 | `SubscribeConnection(mode, "filter")` — second positional means different things | both | Pass `filter_list=[...]` by keyword; `filter_str` does not exist on 3.7 |
 | `get_object_model()` called in the PATCH loop | both | Once for the full model, then `get_object_model_patch()`; on 3.7 later calls silently drain patches instead of blocking |
-| Job counted as the previous job's outcome (cancel → successful, success → cancelled) | both | RRF clears `job.file.fileName` before DSF sets `lastFileCancelled`/`lastFileAborted` (after `StopPrint`, `JobProcessor.cs`, DSF v3.6-dev @ 1205984 and v3.7-dev @ 9001d77, 2026-09-24; reported on 3.7). Never read the flags on the job-end edge: `VigilTracker` holds the outcome until they change, or 10 s pass |
+| No job end ever counted (`jobsSuccessful`/`jobsCancelled` stay 0), a job counted on every daemon start | 3.7 only | DSF 3.7 keeps `job.file.fileName` after a job instead of nulling it (§5, DSF row). `VigilTracker` detects jobs by `job.duration is not None`, which RRF reports only while `IsPrinting()` (RRF 3.6-dev @ 518cacb, 3.7-dev @ 3638836, 2026-09-26); reported on DSF 3.7.0-rc.2 |
+| Daemon restart mid-job counts the running job again | both | `active_job` in `vigil_data.json` records the counted job; the first update after start resumes it instead of counting it |
+| Job counted as the previous job's outcome (cancel → successful, success → cancelled) | both | RRF clears `job.duration` (formerly read: `job.file.fileName`) before DSF sets `lastFileCancelled`/`lastFileAborted` (after `StopPrint`, `JobProcessor.cs`, DSF v3.6-dev @ 1205984 and v3.7-dev @ 9001d77, 2026-09-24; reported on 3.7). Never read the flags on the job-end edge: `VigilTracker` holds the outcome until they change, or 10 s pass |
 | `resolve_path()` returns an object | both | `getattr(response, "result", response)` |
 | `get_file()`/`put_file()` don't exist | both | `resolve_path()` + `open()` |
 | `state.plugins`/`model.plugins` is a Map | both | Guard with `instanceof Map` |

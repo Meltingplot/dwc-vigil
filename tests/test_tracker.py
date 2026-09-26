@@ -58,10 +58,21 @@ def _heaters(*args):
     return NS(heaters=[NS(state=s, avg_pwm=c) for s, c in args])
 
 
+_RUNNING = object()
+
+
 def _job(file_name, warm_up_duration=None, pause_duration=None,
-         last_file_cancelled=False, last_file_aborted=False):
-    """Build a job namespace."""
-    return NS(file=NS(file_name=file_name), warm_up_duration=warm_up_duration,
+         last_file_cancelled=False, last_file_aborted=False, duration=_RUNNING):
+    """Build a job namespace.
+
+    By default it has the DSF 3.6 shape, where file_name and duration are both
+    None when no job runs. Pass duration explicitly for the DSF 3.7 shape, where
+    file_name keeps the last job's name and only duration goes back to None.
+    """
+    if duration is _RUNNING:
+        duration = 0 if file_name is not None else None
+    return NS(file=NS(file_name=file_name), duration=duration,
+              warm_up_duration=warm_up_duration,
               pause_duration=pause_duration,
               last_file_cancelled=last_file_cancelled,
               last_file_aborted=last_file_aborted)
@@ -416,7 +427,7 @@ class TestWarmup:
 class TestJobTracking:
     def test_job_start(self, tracker):
         tracker._timer.reset()
-        tracker._prev_job_file = None
+        tracker._prev_job_active = False
         tracker.update(_model(state="processing", job=_job("test.gcode")))
 
         status = tracker.get_status()
@@ -424,7 +435,7 @@ class TestJobTracking:
 
     def test_job_success(self, tracker):
         tracker._prev_status = "processing"
-        tracker._prev_job_file = "test.gcode"
+        tracker._prev_job_active = True
         tracker._timer.reset()
         tracker.update(_model(state="idle", job=_job(None)))
 
@@ -434,7 +445,7 @@ class TestJobTracking:
     def test_job_cancel(self, tracker):
         """User-cancelled job (last_file_cancelled) counts as cancelled."""
         tracker._prev_status = "processing"
-        tracker._prev_job_file = "test.gcode"
+        tracker._prev_job_active = True
         tracker._timer.reset()
         tracker.update(_model(state="idle", job=_job(None, last_file_cancelled=True)))
 
@@ -445,7 +456,7 @@ class TestJobTracking:
     def test_job_abort(self, tracker):
         """Aborted job (last_file_aborted) counts as cancelled."""
         tracker._prev_status = "processing"
-        tracker._prev_job_file = "test.gcode"
+        tracker._prev_job_active = True
         tracker._timer.reset()
         tracker.update(_model(state="halted", job=_job(None, last_file_aborted=True)))
 
@@ -458,7 +469,7 @@ class TestJobTracking:
         transient 'cancelling' status is never observed (the PATCH
         subscription skips straight from processing to idle)."""
         tracker._prev_status = "processing"
-        tracker._prev_job_file = "test.gcode"
+        tracker._prev_job_active = True
         tracker._timer.reset()
         tracker.update(_model(state="idle", job=_job(None, last_file_cancelled=True)))
 
@@ -469,7 +480,7 @@ class TestJobTracking:
     def test_job_end_counts_once(self, tracker):
         """A finished job is counted exactly once on the file_name -> None edge."""
         tracker._prev_status = "processing"
-        tracker._prev_job_file = "test.gcode"
+        tracker._prev_job_active = True
         tracker._timer.reset()
         tracker.update(_model(state="idle", job=_job(None, last_file_cancelled=True)))
 
@@ -557,6 +568,94 @@ class TestJobOutcomeRace:
         self._tick(tracker, "idle", None)
         tracker.resolve_pending_job(force=True)
         assert self._counts(tracker) == (1, 1, 0)
+
+
+def _tick(tracker, state, file_name, duration, cancelled=False, aborted=False,
+          warm_up_duration=None):
+    tracker._timer.reset()
+    tracker._timer._last_tick -= 0.1
+    tracker.update(_model(state=state, job=_job(
+        file_name, duration=duration, warm_up_duration=warm_up_duration,
+        last_file_cancelled=cancelled, last_file_aborted=aborted)))
+
+
+def _counts(tracker):
+    lt = tracker.get_status()["lifetime"]
+    return lt["jobs_total"], lt["jobs_successful"], lt["jobs_cancelled"]
+
+
+class TestJobStaleFileNameDsf37:
+    """[3.7 only] DSF 3.7 keeps job.file.fileName after a job ("" before the
+    first one); only job.duration goes back to None."""
+
+    def test_jobs_counted_while_file_name_stays_set(self, tracker):
+        _tick(tracker, "idle", "", None)
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 5)
+        _tick(tracker, "idle", "0:/gcodes/a.gcode", None)
+        _tick(tracker, "idle", "0:/gcodes/a.gcode", None, cancelled=True)
+        assert _counts(tracker) == (1, 0, 1)
+        # The same file again, successful this time
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 1, cancelled=True)
+        _tick(tracker, "idle", "0:/gcodes/a.gcode", None, cancelled=True)
+        _tick(tracker, "idle", "0:/gcodes/a.gcode", None)
+        assert _counts(tracker) == (2, 1, 1)
+
+    def test_idle_start_with_stale_file_name_counts_nothing(self, tracker):
+        _tick(tracker, "idle", "0:/gcodes/a.gcode", None)
+        _tick(tracker, "idle", "0:/gcodes/a.gcode", None)
+        assert _counts(tracker) == (0, 0, 0)
+
+    def test_pause_keeps_the_job_running(self, tracker):
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 5)
+        _tick(tracker, "paused", "0:/gcodes/a.gcode", 6)
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 7)
+        assert _counts(tracker) == (1, 0, 0)
+
+
+class TestJobAcrossRestart:
+    """[both] A daemon restart must neither count the running job again nor
+    lose it; active_job is persisted with the counters."""
+
+    def _restart(self, tracker):
+        return VigilTracker(copy.deepcopy(tracker.data))
+
+    def test_restart_mid_job_does_not_count_it_again(self, tracker):
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 5, warm_up_duration=40)
+        assert tracker.data["active_job"] == "0:/gcodes/a.gcode"
+        restarted = self._restart(tracker)
+        _tick(restarted, "processing", "0:/gcodes/a.gcode", 900, warm_up_duration=40)
+        assert _counts(restarted) == (1, 0, 0)
+        assert restarted.get_status()["lifetime"]["warmup_seconds"] == 40
+        _tick(restarted, "idle", "0:/gcodes/a.gcode", None)
+        restarted.resolve_pending_job(force=True)
+        assert _counts(restarted) == (1, 1, 0)
+        assert restarted.data["active_job"] is None
+
+    def test_restart_into_another_job_counts_it(self, tracker):
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 5)
+        restarted = self._restart(tracker)
+        _tick(restarted, "processing", "0:/gcodes/b.gcode", 5)
+        assert _counts(restarted) == (2, 0, 0)
+        assert restarted.data["active_job"] == "0:/gcodes/b.gcode"
+
+    def test_job_ended_while_down_is_forgotten(self, tracker):
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 5)
+        restarted = self._restart(tracker)
+        _tick(restarted, "idle", "0:/gcodes/a.gcode", None)
+        assert _counts(restarted) == (1, 0, 0)
+        assert restarted.data["active_job"] is None
+        _tick(restarted, "processing", "0:/gcodes/a.gcode", 1)
+        assert _counts(restarted) == (2, 0, 0)
+
+    def test_start_mid_job_without_record_counts_it(self, tracker):
+        _tick(tracker, "processing", "0:/gcodes/a.gcode", 5)
+        assert _counts(tracker) == (1, 0, 0)
+
+    def test_data_without_active_job_key_loads(self, data_dir):
+        data = empty_state()
+        del data["active_job"]
+        t = VigilTracker(data)
+        assert t.data["active_job"] is None
 
 
 class TestServiceReset:

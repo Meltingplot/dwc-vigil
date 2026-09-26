@@ -676,3 +676,8 @@ its own generation (and confirming the other is refused), the dashboard, charts,
 counter reset on both, the upgrade-over-existing banner path, and — on 3.7 — that stopping the plugin
 removes the menu entry. §7.4 stands: for `ui36` in particular, a wrong Vuetify 2 prop is valid markup
 that only a running DWC 3.6 will catch.
+
+[both] Job counting by `job.duration` (2026-09-26, CLAUDE.md §5 DSF row): the patch stream of a
+DSF 3.7.0-rc.2 printer mid-job was replayed through real dsf-python v3.7-dev, and the job end was
+a synthetic patch built from the DSF/RRF sources, run through both dsf-python branches. A real job
+end (finished, cancelled, aborted) has yet to be seen on a 3.7 printer and on a 3.6 printer.

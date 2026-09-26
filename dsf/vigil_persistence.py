@@ -102,6 +102,9 @@ def empty_state():
             "sbc_reboots": 0,
         },
         "volume_free_bytes": None,
+        # File name of the job counted in jobs_total whose outcome is still open,
+        # so a daemon restart mid-job does not count it again (see VigilTracker)
+        "active_job": None,
     }
 
 
