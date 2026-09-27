@@ -399,6 +399,8 @@ pytest tests/ -v
 6. [ ] `getattr()` on typed ModelObjects, `.get()` only on ModelDictionaries.
 6a. [ ] New HTTP endpoint: added to `ENDPOINTS` so `_make_async_handler` wraps it with the
        session check (§9.1); the frontend call goes through `core/api.js` with the host.
+       `tests/test_http_auth.py` fails on any `add_http_endpoint`/`set_endpoint_handler`
+       outside `register_endpoints` or with a handler not built by `_make_async_handler`.
 7. [ ] Persistent data under `/opt/dsf/sd/Vigil/`, never the plugin dir.
 8. [ ] Ported component mounted against real Vuetify 4 with the no-warnings assertion (3.7)
        and compiled via `check-ui36` (3.6).

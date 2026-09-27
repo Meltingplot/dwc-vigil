@@ -5,8 +5,10 @@ reports the session the X-Session-Key header resolved to (-1 for none). The daem
 to refuse anonymous requests itself.
 """
 
+import ast
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -92,3 +94,39 @@ def test_every_registered_endpoint_refuses_anonymous_requests(daemon):
         assert status == 401, key
     # Neither the GET nor the POST handlers got to read or reset anything
     assert tracker.method_calls == []
+
+
+DSF_DIR = Path(__file__).resolve().parent.parent / "dsf"
+
+
+def _endpoint_calls():
+    """Every add_http_endpoint/set_endpoint_handler call in the daemon sources, with
+    the innermost function it sits in ("<module>" at top level)."""
+    calls = []
+    for source in sorted(DSF_DIR.glob("*.py")):
+        tree = ast.parse(source.read_text(), filename=str(source))
+
+        def visit(node, function):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function = node.name
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("add_http_endpoint", "set_endpoint_handler")):
+                calls.append((source.name, function, node))
+            for child in ast.iter_child_nodes(node):
+                visit(child, function)
+
+        visit(tree, "<module>")
+    return calls
+
+
+def test_endpoints_are_only_registered_through_the_session_check():
+    # An endpoint registered anywhere else, or with a handler not built by
+    # _make_async_handler, would answer anonymous requests again.
+    calls = _endpoint_calls()
+    assert calls, "no endpoint registration found; update this test"
+    for filename, function, call in calls:
+        where = f"{filename}:{call.lineno} in {function}()"
+        assert (filename, function) == ("vigil-daemon.py", "register_endpoints"), where
+        if call.func.attr == "set_endpoint_handler":
+            handler = call.args[0]
+            assert isinstance(handler, ast.Call) and getattr(handler.func, "id", None) == "_make_async_handler", where
