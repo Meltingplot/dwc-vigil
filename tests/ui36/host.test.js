@@ -4,6 +4,7 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals'
 // to be replaced at module level rather than injected.
 const mockStore = {
     state: {},
+    getters: {},
     dispatch: jest.fn().mockResolvedValue(undefined),
 }
 jest.mock('@/store', () => ({ __esModule: true, default: mockStore }))
@@ -13,6 +14,7 @@ const { createHost } = require('../../src/ui36/host')
 describe('DWC 3.6 host adapter', () => {
     beforeEach(() => {
         mockStore.state = {}
+        mockStore.getters = {}
         mockStore.dispatch.mockClear()
     })
 
@@ -58,6 +60,24 @@ describe('DWC 3.6 host adapter', () => {
         it('resolves even when dispatch returns a non-promise', async () => {
             mockStore.dispatch.mockReturnValueOnce(undefined)
             await expect(createHost().startBackend()).resolves.toBeUndefined()
+        })
+    })
+
+    describe('sessionKey', () => {
+        it('is null while the default machine module has no connector', () => {
+            mockStore.getters = { 'machine/connector': null }
+            expect(createHost().sessionKey()).toBeNull()
+        })
+
+        it('reads the key off machine/connector on every call', () => {
+            const connector = { sessionKey: 'first' }
+            mockStore.getters = { 'machine/connector': connector }
+            const host = createHost()
+            expect(host.sessionKey()).toBe('first')
+
+            // RestConnector logs in again on reconnect and replaces the key
+            connector.sessionKey = 'second'
+            expect(host.sessionKey()).toBe('second')
         })
     })
 })

@@ -3,9 +3,10 @@
  *
  * dwc-plugin-test-kit ships a stub for this store, but it only covers `model`,
  * `isConnected`, `sendCode` and `getFileList` — not `startSbcPlugin`, which is the one
- * machine-store action Vigil actually calls. So this replaces the kit's alias with a
- * stub that keeps the kit's shared state (`dwc.model`, fed by `setModel(...)`) and adds
- * the recording of started SBC plugins that the backend-recovery tests assert on.
+ * machine-store action Vigil actually calls, nor `connector`, which holds the session
+ * key. So this replaces the kit's alias with a stub that keeps the kit's shared state
+ * (`dwc.model`, fed by `setModel(...)`) and adds the recording of started SBC plugins
+ * that the backend-recovery tests assert on, plus a settable connector.
  */
 import { dwc } from 'dwc-plugin-test-kit'
 
@@ -28,10 +29,18 @@ export function failNextSbcPluginStart(error) {
     startFailure = error
 }
 
+/** The connector `useMachineStore().connector` hands out; `null` means not connected. */
+let connector = null
+
+export function setConnector(value) {
+    connector = value
+}
+
 export function useMachineStore() {
     return {
         get model() { return dwc.model },
         get isConnected() { return dwc.connected },
+        get connector() { return connector },
         async startSbcPlugin(plugin) {
             if (startFailure) {
                 const error = startFailure

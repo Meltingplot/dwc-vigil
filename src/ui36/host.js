@@ -4,11 +4,14 @@
  * {@link HostAdapter} for DuetWebControl 3.6 (Vue 2.7, Vuex 3).
  *
  * DWC 3.6 exposes a single Vuex root store as a module singleton, with a namespaced
- * `machine` module holding the object model. The 3.7 counterpart talks to the Pinia
- * machine store instead; nothing else about the adapter differs.
+ * `machine` module holding the object model and the connector. DWC re-registers that
+ * module for whichever machine is selected, so `machine/connector` is the current
+ * connection's (or `null`). The 3.7 counterpart talks to the Pinia machine store
+ * instead; nothing else about the adapter differs.
  */
 
 import store from '@/store'
+import { connectorSessionKey } from '../core/api'
 import { PLUGIN_ID, getPluginEntry } from '../core/backend'
 
 /**
@@ -21,5 +24,6 @@ export function createHost() {
         // computed (and its watcher) live when DSF reports a new PID.
         pluginEntry: () => getPluginEntry(store.state && store.state.machine && store.state.machine.model),
         startBackend: () => Promise.resolve(store.dispatch('machine/startSbcPlugin', PLUGIN_ID)),
+        sessionKey: () => connectorSessionKey(store.getters && store.getters['machine/connector']),
     }
 }

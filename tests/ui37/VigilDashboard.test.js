@@ -9,6 +9,7 @@ function fakeHost(options = {}) {
     return {
         pluginEntry: vi.fn(() => (options.noModel ? undefined : entry)),
         startBackend: options.startBackend || vi.fn().mockResolvedValue(undefined),
+        sessionKey: vi.fn(() => 'test-session'),
     }
 }
 
@@ -169,6 +170,29 @@ describe('VigilDashboard backend recovery', () => {
             mockFetchError(404, 'Not Found')
             await expect(wrapper.vm.waitForBackend(3, 1)).resolves.toBe(false)
             expect(global.fetch).toHaveBeenCalledTimes(3)
+        })
+    })
+
+    describe('session key', () => {
+        // The daemon answers 401 to any request without the X-Session-Key of a live session
+        it('sends the host\'s session key with the status poll', async () => {
+            ({ wrapper } = mountDashboard())
+            await flushPromises()
+
+            const [url, init] = global.fetch.mock.calls[0]
+            expect(url).toBe('/machine/Vigil/status')
+            expect(init.headers['X-Session-Key']).toBe('test-session')
+        })
+
+        it('sends it with actions that change data', async () => {
+            ({ wrapper } = mountDashboard())
+            await flushPromises()
+
+            mockFetchSuccess({ ok: true })
+            await wrapper.vm.handleServiceEvent({ component: 'nozzle', description: 'swapped' })
+            const [url, init] = global.fetch.mock.calls[0]
+            expect(url).toBe('/machine/Vigil/service/event')
+            expect(init.headers['X-Session-Key']).toBe('test-session')
         })
     })
 })
