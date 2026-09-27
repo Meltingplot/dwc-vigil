@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { setModel } from 'dwc-plugin-test-kit'
 import { createHost } from '../../src/ui37/host'
-import { resetSbcPlugins, startedSbcPlugins, failNextSbcPluginStart } from '../dwc-stubs/machine'
+import { resetSbcPlugins, startedSbcPlugins, failNextSbcPluginStart, setConnector } from '../dwc-stubs/machine'
 
 describe('DWC 3.7 host adapter', () => {
     beforeEach(() => {
         resetSbcPlugins()
+        setConnector(null)
     })
 
     describe('pluginEntry', () => {
@@ -43,6 +44,23 @@ describe('DWC 3.7 host adapter', () => {
         it('propagates a refusal from DSF', async () => {
             failNextSbcPluginStart(new Error('Incompatible DSF version'))
             await expect(createHost().startBackend()).rejects.toThrow('Incompatible DSF version')
+        })
+    })
+
+    describe('sessionKey', () => {
+        it('is null while not connected', () => {
+            expect(createHost().sessionKey()).toBeNull()
+        })
+
+        it('reads the key off the machine store\'s connector on every call', () => {
+            const connector = { sessionKey: 'first' }
+            setConnector(connector)
+            const host = createHost()
+            expect(host.sessionKey()).toBe('first')
+
+            // RestConnector logs in again on reconnect and replaces the key
+            connector.sessionKey = 'second'
+            expect(host.sessionKey()).toBe('second')
         })
     })
 })

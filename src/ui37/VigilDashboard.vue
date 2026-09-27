@@ -259,7 +259,7 @@ export default {
         // --- Data loading ---
         async loadStatus() {
             try {
-                this.statusData = await apiGet('status')
+                this.statusData = await apiGet(this.host, 'status')
                 if (!this.historyLoaded) {
                     this.loadHistory()
                 }
@@ -270,7 +270,7 @@ export default {
         async loadHistory() {
             this.loadingHistory = true
             try {
-                const result = await apiGet('history?days=30')
+                const result = await apiGet(this.host, 'history?days=30')
                 this.historyDays = result.days || []
                 this.historyLoaded = true
             } catch {
@@ -298,7 +298,7 @@ export default {
         },
         // Thin wrapper so tests can stub the wait without stubbing global fetch
         waitForBackend(attempts, delay) {
-            return waitForBackend(attempts, delay)
+            return waitForBackend(this.host, attempts, delay)
         },
 
         // --- Actions ---
@@ -306,9 +306,9 @@ export default {
             this.exporting = true
             try {
                 if (format === 'csv') {
-                    downloadBlob(await apiBlob('export?format=csv'), 'vigil_export.csv')
+                    downloadBlob(await apiBlob(this.host, 'export?format=csv'), 'vigil_export.csv')
                 } else {
-                    const data = await apiGet('export?format=json')
+                    const data = await apiGet(this.host, 'export?format=json')
                     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
                     downloadBlob(blob, 'vigil_export.json')
                 }
@@ -323,7 +323,7 @@ export default {
         async handleReset(resetData) {
             this.resetting = true
             try {
-                await apiPost('service/reset', resetData)
+                await apiPost(this.host, 'service/reset', resetData)
                 this.showResetDialog = false
                 this.notify('Counter reset successful', 'success')
                 await this.loadStatus()
@@ -337,7 +337,7 @@ export default {
         async handleServiceEvent(eventData) {
             this.savingEvent = true
             try {
-                await apiPost('service/event', eventData)
+                await apiPost(this.host, 'service/event', eventData)
                 this.showEventDialog = false
                 this.notify('Service event logged', 'success')
             } catch (e) {
@@ -351,7 +351,7 @@ export default {
             this.showLogDialog = true
             this.loadingLog = true
             try {
-                const result = await apiGet('service/log')
+                const result = await apiGet(this.host, 'service/log')
                 this.serviceLogEntries = result.log || []
             } catch (e) {
                 this.notify(`Failed to load service log: ${e.message}`, 'error')

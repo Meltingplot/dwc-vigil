@@ -70,7 +70,7 @@ src/
   index.js          import './ui37/index'   — what DWC 3.7's builder compiles; the 3.6
                                               stage script generates its own one-liner
   core/             framework-neutral, shipped to BOTH generations unchanged
-    host.js         JSDoc HostAdapter: { pluginEntry(), startBackend() } — the ONLY DWC seam
+    host.js         JSDoc HostAdapter: { pluginEntry(), startBackend(), sessionKey() } — the ONLY DWC seam
     backend.js      SBC backend state (PID lookup, start, "partially started" recovery)
     api.js          fetch() calls to the daemon's DSF HTTP endpoints
     charts.js       Chart.js 4 configs (bundled on 3.7, vendored into the 3.6 build)
@@ -133,17 +133,19 @@ Events.on('dwcPluginUnloaded', id => { if (id === PLUGIN_ID) unregisterRoute('/V
   provided by DWC at build time; in tests they are stubs (§10).
 
 ### 3.2 The host adapter — the only DWC coupling [both]
-`src/core/host.js` documents a two-member `HostAdapter`; each shell implements it:
+`src/core/host.js` documents a three-member `HostAdapter`; each shell implements it:
 ```javascript
 // src/ui36/host.js  [3.6 only] — Vuex root store is a module singleton
 import store from '@/store'
 pluginEntry:  () => getPluginEntry(store.state?.machine?.model)
 startBackend: () => Promise.resolve(store.dispatch('machine/startSbcPlugin', PLUGIN_ID))
+sessionKey:   () => connectorSessionKey(store.getters?.['machine/connector'])
 
 // src/ui37/host.js  [3.7 only] — Pinia store resolved per call (keeps the read reactive)
 import { useMachineStore } from '@/stores/machine'
 pluginEntry:  () => getPluginEntry(useMachineStore().model)
 startBackend: () => Promise.resolve(useMachineStore().startSbcPlugin(PLUGIN_ID))
+sessionKey:   () => connectorSessionKey(useMachineStore().connector)
 ```
 - `pluginEntry()` must read through the store on **every** call — never cache — or the
   dashboard's `backendRunning` computed freezes at its first value. [both]
@@ -151,6 +153,11 @@ startBackend: () => Promise.resolve(useMachineStore().startSbcPlugin(PLUGIN_ID))
   no connection); `ensureBackendRunning` gives up immediately on `undefined`. [both]
 - `model.plugins` is a **Map** keyed by plugin id on both generations; guard with
   `instanceof Map` because tests may pass a plain object. [both]
+- `sessionKey()` is the key DWC's `RestConnector` logged in with (§9). `connector.sessionKey`
+  is `private` in the typings but a plain runtime property with the same name in
+  `@duet3d/connectors` 3.6.0 and 3.7.0-rc.2. Neither store has a public accessor. Read it
+  per call, because a reconnect replaces it. `null` when not connected. [both] (DWC v3.6-dev
+  @ 924fff9, v3.7-dev @ 8974abe, 2026-09-27)
 
 ### 3.3 Plugin upgrades leave the SBC backend stopped [both]
 Installing a newer ZIP over an existing installation puts the plugin into DWC's
@@ -226,6 +233,7 @@ the handler's job; child loggers (`vigil.tracker` etc.) propagate into it.
 | `set_plugin_data(plugin, key, value)` | `value: str` | `value: object` | Always sends strings |
 | Python requirement | `>= 3.7` | `>= 3.11` | CI tests 3.10–3.12 with dsf mocked; real 3.7 spot checks need 3.11+ |
 | `has_data_available()` | absent | present | Not used |
+| `ReceivedHttpRequest` (plugin HTTP request) | DSF sends `sessionId, queries, headers, contentType, body`; `from_json` is `cls(**data)` | DSF **adds** `remoteIPAddress`, `remotePort`; `from_json` picks the known keys and drops the rest. dsf-python v3.6-dev raises `TypeError: unexpected keyword argument 'remoteIPAddress'` on a DSF 3.7 request | Reads `session_id` (both), never the remote address. Verified 2026-09-27 (§9.1) |
 | `subscribe_to_keys()` | absent | present | Not used |
 | **DSF** (not dsf-python): nulls from RRF | Requested (`d99vno`/`d99fno`, `Updater.cs`), so every null arrives as `null` | No longer requested (`UpdateService.cs`, DSF 32db3df, in v3.7.0-rc.1+); a missing property is rebuilt as `null` **only if declared nullable**. Non-nullable ones such as `job.file.fileName` (`string`) keep their last value (`""` before the first job) | Never test a non-nullable C# property for `None`; job running = `job.duration is not None` (`int?`, `[Live]`). Verified DSF v3.6-dev @ 1205984, v3.7-dev @ 9001d77, 2026-09-26 |
 
@@ -274,10 +282,30 @@ ep = cmd.add_http_endpoint(HttpEndpointType.GET, "Vigil", "status")   # → /mac
 ep.set_endpoint_handler(handler)         # async def handler(http_conn): request = await http_conn.read_request() ...
 await http_conn.send_response(200, json.dumps(body), HttpResponseType.JSON)
 ```
-Frontend: plain `fetch('/machine/Vigil/status')`, check `resp.ok` before parsing; DWC does
-not expose `$fetch` to plugins on either generation. Handlers return
+Frontend: plain `fetch('/machine/Vigil/status', { headers: { 'X-Session-Key': host.sessionKey() } })`
+(`core/api.js`), check `resp.ok` before parsing; DWC does not expose `$fetch` to plugins on
+either generation. Handlers return
 `{"status": 200, "body": json.dumps(...)}`; network errors and config errors are reported
 distinctly. Register endpoints before the subscribe loop starts.
+
+### 9.1 DSF does not authorize plugin endpoints; the daemon does [both]
+`CustomEndpointMiddleware` (DuetWebServer) forwards **every** request to a plugin endpoint,
+logged in or not. All it does is resolve the `X-Session-Key` header (`?sessionKey=` for
+WebSocket endpoints) to `ReceivedHttpRequest.session_id`, which is `-1` when the key is
+missing, unknown or expired. It does not use the no-password IP ticket that DSF's own
+`/machine/*` routes fall back on, so a no-password printer needs the key too.
+`_make_async_handler` therefore answers **401** unless `session_id > 0` (DSF only registers
+IDs > 0) before any handler runs. Every call in `core/api.js` sends `host.sessionKey()`.
+Every session DSF issues is read-write (`/machine/connect`, `rr_connect` and the
+no-password ticket all pass `readWrite: true`), so POSTs need no extra access-level check.
+External scripts log in first: `GET /machine/connect?password=…` → `{"sessionKey": "…"}`,
+then send it as `X-Session-Key`.
+Do **not** route the calls through the store's `request()` (public on both generations):
+it maps every 4xx other than 401/403/404 to "bad status code N" and would lose the daemon's
+validation messages.
+Verified DSF v3.6-dev @ 1205984 and v3.7-dev @ 9001d77, dsf-python v3.6-dev @ 23308a2 and
+v3.7-dev @ b1af5bb (real `ReceivedHttpRequest.from_json` run through `_has_session`),
+2026-09-27.
 
 ---
 ## 10. Frontend Patterns
@@ -369,6 +397,10 @@ pytest tests/ -v
 5. [ ] New dsf-python patch: at the top of the daemon, `try/except`, generation-tagged
        comment, test in `test_dsf_patches.py` for both shapes.
 6. [ ] `getattr()` on typed ModelObjects, `.get()` only on ModelDictionaries.
+6a. [ ] New HTTP endpoint: added to `ENDPOINTS` so `_make_async_handler` wraps it with the
+       session check (§9.1); the frontend call goes through `core/api.js` with the host.
+       `tests/test_http_auth.py` fails on any `add_http_endpoint`/`set_endpoint_handler`
+       outside `register_endpoints` or with a handler not built by `_make_async_handler`.
 7. [ ] Persistent data under `/opt/dsf/sd/Vigil/`, never the plugin dir.
 8. [ ] Ported component mounted against real Vuetify 4 with the no-warnings assertion (3.7)
        and compiled via `check-ui36` (3.6).
@@ -393,6 +425,7 @@ pytest tests/ -v
 | No job end ever counted (`jobsSuccessful`/`jobsCancelled` stay 0), a job counted on every daemon start | 3.7 only | DSF 3.7 keeps `job.file.fileName` after a job instead of nulling it (§5, DSF row). `VigilTracker` detects jobs by `job.duration is not None`, which RRF reports only while `IsPrinting()` (RRF 3.6-dev @ 518cacb, 3.7-dev @ 3638836, 2026-09-26); reported on DSF 3.7.0-rc.2 |
 | Daemon restart mid-job counts the running job again | both | `active_job` in `vigil_data.json` records the counted job; the first update after start resumes it instead of counting it |
 | Job counted as the previous job's outcome (cancel → successful, success → cancelled) | both | RRF clears `job.duration` (formerly read: `job.file.fileName`) before DSF sets `lastFileCancelled`/`lastFileAborted` (after `StopPrint`, `JobProcessor.cs`, DSF v3.6-dev @ 1205984 and v3.7-dev @ 9001d77, 2026-09-24; reported on 3.7). Never read the flags on the job-end edge: `VigilTracker` holds the outcome until they change, or 10 s pass |
+| Plugin endpoints answer anyone on the network, no DWC login needed | both | DSF forwards anonymous requests with `session_id == -1`; the daemon answers 401 unless `session_id > 0`, and `core/api.js` sends `X-Session-Key` from `host.sessionKey()` (§9.1) |
 | `resolve_path()` returns an object | both | `getattr(response, "result", response)` |
 | `get_file()`/`put_file()` don't exist | both | `resolve_path()` + `open()` |
 | `state.plugins`/`model.plugins` is a Map | both | Guard with `instanceof Map` |

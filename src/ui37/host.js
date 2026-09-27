@@ -12,6 +12,7 @@
  */
 
 import { useMachineStore } from '@/stores/machine'
+import { connectorSessionKey } from '../core/api'
 import { PLUGIN_ID, getPluginEntry } from '../core/backend'
 
 /**
@@ -25,5 +26,6 @@ export function createHost() {
     return {
         pluginEntry: () => getPluginEntry(machine().model),
         startBackend: () => Promise.resolve(machine().startSbcPlugin(PLUGIN_ID)),
+        sessionKey: () => connectorSessionKey(machine().connector),
     }
 }

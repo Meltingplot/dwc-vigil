@@ -4,12 +4,12 @@
  * The seam between Vigil's shared logic and whichever DuetWebControl it runs inside.
  *
  * DWC 3.6 is Vue 2.7 / Vuex 3, DWC 3.7 is Vue 3.5 / Pinia. They differ in how the
- * machine object model is reached and how an SBC plugin is started — and in nothing
- * else this plugin cares about, because all of Vigil's data flows over plain
- * `fetch('/machine/Vigil/…')` calls to the Python daemon, which is DSF's HTTP endpoint
- * mechanism and identical on both generations.
+ * machine object model and the connector are reached and how an SBC plugin is started
+ * — and in nothing else this plugin cares about, because all of Vigil's data flows over
+ * plain `fetch('/machine/Vigil/…')` calls to the Python daemon, which is DSF's HTTP
+ * endpoint mechanism and identical on both generations.
  *
- * So the entire DWC coupling is the two members below. Each UI shell supplies its own
+ * So the entire DWC coupling is the three members below. Each UI shell supplies its own
  * implementation (`src/ui36/host.js`, `src/ui37/host.js`) and nothing else in `core/`
  * imports a store.
  *
@@ -31,6 +31,12 @@
  *   on `undefined` rather than polling something that will never appear.
  * @property {() => Promise<void>} startBackend
  *   Ask DSF to start the SBC part of this plugin (`startSbcPlugin('Vigil')`).
+ * @property {() => (string|null)} sessionKey
+ *   The session key DWC's connector logged in with, or `null` when there is no SBC
+ *   connection. Every call to the daemon sends it as `X-Session-Key`; without it the
+ *   daemon answers 401 (see `_has_session` in `dsf/vigil-daemon.py`).
+ *
+ *   Read on every call: the connector replaces the key when it reconnects.
  */
 
 export {}

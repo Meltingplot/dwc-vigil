@@ -84,7 +84,7 @@ immediately.
 src/
   index.js                  # Entry point every DWC builder compiles
   core/                     # Framework-neutral, shipped to every DWC generation
-    host.js                 # The DWC seam: object model read + start the backend
+    host.js                 # The DWC seam: object model read, start the backend, session key
     backend.js              # SBC backend state (PID lookup, start, auto-recovery)
     api.js                  # Calls to the daemon's DSF HTTP endpoints
     charts.js               # Chart.js 4 configuration for all four charts
@@ -109,6 +109,15 @@ dsf/                        # Backend (Python, runs on SBC)
 ```
 
 Data is persisted to `/opt/dsf/sd/Vigil/` using atomic writes with SHA-256 checksums and XOR parity recovery, so it survives plugin upgrades and unexpected shutdowns.
+
+The daemon's HTTP endpoints (`/machine/Vigil/*`) answer only requests that carry the session key of a logged-in DWC session in the `X-Session-Key` header, and refuse everything else with `401`. DSF itself forwards anonymous requests to plugin endpoints, so the daemon enforces this. The dashboard sends the key DWC logged in with. A script has to log in first:
+
+```bash
+KEY=$(curl -s "http://printer/machine/connect?password=secret" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sessionKey"])')
+curl -H "X-Session-Key: $KEY" http://printer/machine/Vigil/status
+```
+
+Use the same call without a password set: DSF accepts any password then and still issues a key.
 
 ## Development
 

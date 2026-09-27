@@ -465,10 +465,34 @@ def update_plugin_data(cmd, tracker):
 
 # --- HTTP endpoint handler factory ---
 
+def _has_session(request):
+    """Whether DSF matched the request to a logged-in session.
+
+    [both] DuetWebServer does not authorize plugin endpoints: CustomEndpointMiddleware
+    forwards every request, anonymous or not, and only reports the session the
+    ``X-Session-Key`` header resolves to, ``-1`` when the header is missing or the key
+    unknown/expired. DSF registers sessions with IDs > 0 only. Enforcing it is up to the
+    plugin. Every session DSF issues is read-write (``/machine/connect``, ``rr_connect``
+    and the no-password ticket all pass ``readWrite: true``), so GET and POST need the
+    same check. Verified DSF v3.6-dev @ 1205984, v3.7-dev @ 9001d77 (``SessionStorage``,
+    ``CustomEndpointMiddleware``) and dsf-python v3.6-dev @ 23308a2, v3.7-dev @ b1af5bb
+    (``ReceivedHttpRequest.session_id``), 2026-09-27.
+    """
+    session_id = getattr(request, "session_id", -1)
+    return isinstance(session_id, int) and session_id > 0
+
+
 def _make_async_handler(tracker, handler_func):
     """Create an async HTTP handler for a dsf-python endpoint."""
     async def _handler(http_conn):
         request = await http_conn.read_request()
+        if not _has_session(request):
+            await http_conn.send_response(
+                401,
+                json.dumps({"error": "Not logged in: X-Session-Key missing or expired"}),
+                HttpResponseType.JSON,
+            )
+            return
         try:
             queries = getattr(request, "queries", {}) or {}
             body = getattr(request, "body", "") or ""

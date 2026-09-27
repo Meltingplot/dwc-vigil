@@ -681,3 +681,10 @@ that only a running DWC 3.6 will catch.
 DSF 3.7.0-rc.2 printer mid-job was replayed through real dsf-python v3.7-dev, and the job end was
 a synthetic patch built from the DSF/RRF sources, run through both dsf-python branches. A real job
 end (finished, cancelled, aborted) has yet to be seen on a 3.7 printer and on a 3.6 printer.
+
+[both] Endpoint session enforcement (2026-09-27, CLAUDE.md §9.1): verified against the DSF,
+dsf-python and `@duet3d/connectors` sources of both generations, and by running a DSF-shaped
+request through the real `ReceivedHttpRequest` of both dsf-python branches. Still to be seen
+on a printer of each generation: the dashboard loading with and without a machine password,
+`curl` without `X-Session-Key` answered 401, and the dashboard still working after DWC
+reconnects (which gives it a new session key).
